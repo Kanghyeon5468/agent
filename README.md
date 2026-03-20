@@ -1,4 +1,4 @@
-# Trip Planner (Cloudflare Workers)
+# AI-powered travel planning app on Cloudflare
 
 Chat app that plans trips with **tools**, **Durable Object state** (active itinerary, saved trips, user memory), and **Workers AI**. The assistant is instructed to behave like **Trip Planner**: adaptive, memory-aware, and **English-only** in all user-facing replies—even when the user writes in another language.
 
