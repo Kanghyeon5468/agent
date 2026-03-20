@@ -100,7 +100,7 @@ function ThemeToggle() {
   );
 }
 
-// ── Tool display helpers 
+// ── Tool display helpers
 
 function formatToolLabel(name: string): string {
   const map: Record<string, string> = {
@@ -624,9 +624,7 @@ function Chat() {
                   }
                 }}
               >
-                {activeItinerary
-                  ? activeItinerary.destination
-                  : "No Trip"}
+                {activeItinerary ? activeItinerary.destination : "No Trip"}
                 {activeItinerary &&
                   activeItinerary.modifications.length > 0 && (
                     <Badge variant="primary" className="ml-1.5">
@@ -1157,7 +1155,6 @@ function MemoryRow({ label, values }: { label: string; values: string[] }) {
     </div>
   );
 }
-
 
 export default function App() {
   return (

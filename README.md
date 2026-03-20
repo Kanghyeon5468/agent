@@ -6,11 +6,11 @@ Chat app that plans trips with **tools**, **Durable Object state** (active itine
 
 Behavior is defined in `src/server.ts` (`systemPrompt` in `onChatMessage`). In short:
 
-| Flow | Tools (order) | Outcome |
-|------|----------------|---------|
-| **New plan** | `searchDestination` → `getWeatherForecast` → `estimateBudget` (when useful) | Write a **full day-by-day plan in the chat** (headings, times, places, tips), then call **`createItinerary`** once with the **same** itinerary text. |
-| **Change plan** | `getActiveItinerary` | Rewrite the plan in the chat, then **`modifyItinerary`** with the full updated text plus a **reason**. |
-| **Preferences** | `rememberPreference` | When the user shares likes, style, diet, etc., persist them for later turns. |
+| Flow            | Tools (order)                                                               | Outcome                                                                                                                                              |
+| --------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **New plan**    | `searchDestination` → `getWeatherForecast` → `estimateBudget` (when useful) | Write a **full day-by-day plan in the chat** (headings, times, places, tips), then call **`createItinerary`** once with the **same** itinerary text. |
+| **Change plan** | `getActiveItinerary`                                                        | Rewrite the plan in the chat, then **`modifyItinerary`** with the full updated text plus a **reason**.                                               |
+| **Preferences** | `rememberPreference`                                                        | When the user shares likes, style, diet, etc., persist them for later turns.                                                                         |
 
 **Itinerary style:** `Day 1`, `Day 2`, …; realistic timing and venues; tag activities `[indoor]` or `[outdoor]` when it helps.
 
@@ -48,11 +48,11 @@ npm run deploy
 
 ## Project layout
 
-| Path | Role |
-|------|------|
-| `src/server.ts` | Agent, `systemPrompt`, tools, Durable Object state |
-| `src/app.tsx` | Chat UI, itinerary / saved trips panels, tool approval UI |
-| `src/client.tsx` | React entry |
+| Path             | Role                                                      |
+| ---------------- | --------------------------------------------------------- |
+| `src/server.ts`  | Agent, `systemPrompt`, tools, Durable Object state        |
+| `src/app.tsx`    | Chat UI, itinerary / saved trips panels, tool approval UI |
+| `src/client.tsx` | React entry                                               |
 
 Stack: Cloudflare Workers, Durable Objects, `@cloudflare/ai-chat`, AI SDK (`ai`), React 19, Kumo, Tailwind CSS 4.
 

@@ -21,7 +21,7 @@ import { z } from "zod";
  */
 const WORKERS_AI_CHAT_MODEL = "@cf/meta/llama-3.1-70b-instruct";
 
-// Types 
+// Types
 
 interface ActiveItinerary {
   id: string;
@@ -678,7 +678,8 @@ function parseEmbeddedFunctionCall(text: string): {
   if (!trimmed.startsWith("{")) return null;
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (parsed.type !== "function" || typeof parsed.name !== "string") return null;
+    if (parsed.type !== "function" || typeof parsed.name !== "string")
+      return null;
     const rawParams = parsed.parameters ?? parsed.arguments;
     if (typeof rawParams === "string") {
       return {
@@ -686,7 +687,11 @@ function parseEmbeddedFunctionCall(text: string): {
         args: JSON.parse(rawParams) as Record<string, unknown>
       };
     }
-    if (rawParams && typeof rawParams === "object" && !Array.isArray(rawParams)) {
+    if (
+      rawParams &&
+      typeof rawParams === "object" &&
+      !Array.isArray(rawParams)
+    ) {
       return { name: parsed.name, args: rawParams as Record<string, unknown> };
     }
     return null;
@@ -750,7 +755,8 @@ async function emitRecoveredToolCall(
 
   const args = { ...embedded.args };
   if (embedded.name === "createItinerary") {
-    if (typeof args.dayCount === "string") args.dayCount = Number(args.dayCount);
+    if (typeof args.dayCount === "string")
+      args.dayCount = Number(args.dayCount);
     if (
       typeof args.itinerary === "string" &&
       (args.itinerary.includes("Full itinerary as readable text") ||
@@ -873,389 +879,385 @@ RULES:
       // Feature 1: Itinerary Generation
 
       searchDestination: tool({
-          description:
-            "Look up travel info about a destination: attractions, food, costs, tips",
-          inputSchema: z.object({
-            destination: z.string().describe("City or region name")
-          }),
-          execute: async ({ destination }) => {
-            const key = destination.toLowerCase().trim();
-            const info = DESTINATIONS[key];
-            if (info) {
-              const { temps: _t, rain: _r, ...rest } = info;
-              return { found: true, destination, ...rest };
-            }
-            return {
-              found: false,
-              destination,
-              note: `"${destination}" not in curated database. I can still plan using general knowledge.`,
-              genericTips: [
-                "Check visa requirements early",
-                "Book accommodation in advance",
-                "Research local customs",
-                "Get travel insurance"
-              ]
-            };
+        description:
+          "Look up travel info about a destination: attractions, food, costs, tips",
+        inputSchema: z.object({
+          destination: z.string().describe("City or region name")
+        }),
+        execute: async ({ destination }) => {
+          const key = destination.toLowerCase().trim();
+          const info = DESTINATIONS[key];
+          if (info) {
+            const { temps: _t, rain: _r, ...rest } = info;
+            return { found: true, destination, ...rest };
           }
+          return {
+            found: false,
+            destination,
+            note: `"${destination}" not in curated database. I can still plan using general knowledge.`,
+            genericTips: [
+              "Check visa requirements early",
+              "Book accommodation in advance",
+              "Research local customs",
+              "Get travel insurance"
+            ]
+          };
+        }
+      }),
+
+      getWeatherForecast: tool({
+        description: "Get weather forecast for a destination in a given month",
+        inputSchema: z.object({
+          destination: z.string().describe("City name"),
+          month: z.string().describe("Month name, e.g. 'March'")
         }),
+        execute: async ({ destination, month }) =>
+          getWeather(destination, month)
+      }),
 
-        getWeatherForecast: tool({
-          description: "Get weather forecast for a destination in a given month",
-          inputSchema: z.object({
-            destination: z.string().describe("City name"),
-            month: z.string().describe("Month name, e.g. 'March'")
-          }),
-          execute: async ({ destination, month }) =>
-            getWeather(destination, month)
+      estimateBudget: tool({
+        description: "Calculate estimated trip budget breakdown",
+        inputSchema: z.object({
+          destination: z.string().describe("City name"),
+          days: z.coerce.number().describe("Trip duration in days"),
+          budgetLevel: z
+            .enum(["budget", "moderate", "luxury"])
+            .describe("Spending tier"),
+          travelers: z.coerce
+            .number()
+            .default(1)
+            .describe("Number of travelers")
         }),
+        execute: async ({ destination, days, budgetLevel, travelers }) => {
+          const key = destination.toLowerCase().trim();
+          const info = DESTINATIONS[key];
+          const daily =
+            info?.avgDailyCost[budgetLevel] ??
+            (budgetLevel === "budget"
+              ? 70
+              : budgetLevel === "moderate"
+                ? 150
+                : 400);
 
-        estimateBudget: tool({
-          description: "Calculate estimated trip budget breakdown",
-          inputSchema: z.object({
-            destination: z.string().describe("City name"),
-            days: z.coerce.number().describe("Trip duration in days"),
-            budgetLevel: z
-              .enum(["budget", "moderate", "luxury"])
-              .describe("Spending tier"),
-            travelers: z.coerce
-              .number()
-              .default(1)
-              .describe("Number of travelers")
-          }),
-          execute: async ({ destination, days, budgetLevel, travelers }) => {
-            const key = destination.toLowerCase().trim();
-            const info = DESTINATIONS[key];
-            const daily =
-              info?.avgDailyCost[budgetLevel] ??
-              (budgetLevel === "budget"
-                ? 70
-                : budgetLevel === "moderate"
-                  ? 150
-                  : 400);
+          const accommodation = Math.round(daily * 0.4 * days);
+          const food = Math.round(daily * 0.25 * days);
+          const transport = Math.round(daily * 0.15 * days);
+          const activities = Math.round(daily * 0.15 * days);
+          const misc = Math.round(daily * 0.05 * days);
+          const perPerson =
+            accommodation + food + transport + activities + misc;
 
-            const accommodation = Math.round(daily * 0.4 * days);
-            const food = Math.round(daily * 0.25 * days);
-            const transport = Math.round(daily * 0.15 * days);
-            const activities = Math.round(daily * 0.15 * days);
-            const misc = Math.round(daily * 0.05 * days);
-            const perPerson =
-              accommodation + food + transport + activities + misc;
+          return {
+            destination,
+            days,
+            budgetLevel,
+            travelers,
+            dailyEstimate: daily,
+            breakdown: {
+              accommodation,
+              food,
+              localTransport: transport,
+              activities,
+              miscellaneous: misc,
+              totalPerPerson: perPerson
+            },
+            grandTotal: perPerson * travelers,
+            currency: "USD",
+            note: "Excludes international flights and travel insurance"
+          };
+        }
+      }),
 
-            return {
-              destination,
-              days,
-              budgetLevel,
-              travelers,
-              dailyEstimate: daily,
-              breakdown: {
-                accommodation,
-                food,
-                localTransport: transport,
-                activities,
-                miscellaneous: misc,
-                totalPerPerson: perPerson
-              },
-              grandTotal: perPerson * travelers,
-              currency: "USD",
-              note: "Excludes international flights and travel insurance"
-            };
-          }
+      createItinerary: tool({
+        description:
+          "Save the active trip. Pass the same day-by-day itinerary text you showed the user (plain text, not JSON).",
+        inputSchema: z.object({
+          destination: z.string(),
+          startDate: z.string().describe("YYYY-MM-DD"),
+          endDate: z.string().describe("YYYY-MM-DD"),
+          style: z
+            .string()
+            .describe(
+              "Travel style: adventure, relaxation, cultural, foodie, nightlife, family, romantic"
+            ),
+          dayCount: z.coerce.number().describe("Number of days"),
+          itinerary: z
+            .string()
+            .describe(
+              "Full itinerary as readable text (headings, times, places)"
+            )
         }),
-
-        createItinerary: tool({
-          description:
-            "Save the active trip. Pass the same day-by-day itinerary text you showed the user (plain text, not JSON).",
-          inputSchema: z.object({
-            destination: z.string(),
-            startDate: z.string().describe("YYYY-MM-DD"),
-            endDate: z.string().describe("YYYY-MM-DD"),
-            style: z
-              .string()
-              .describe(
-                "Travel style: adventure, relaxation, cultural, foodie, nightlife, family, romantic"
-              ),
-            dayCount: z.coerce.number().describe("Number of days"),
-            itinerary: z
-              .string()
-              .describe("Full itinerary as readable text (headings, times, places)")
-          }),
-          execute: async ({
+        execute: async ({
+          destination,
+          startDate,
+          endDate,
+          style,
+          dayCount,
+          itinerary
+        }) => {
+          const current = this.appState;
+          const active: ActiveItinerary = {
+            id: crypto.randomUUID(),
             destination,
             startDate,
             endDate,
             style,
             dayCount,
-            itinerary
-          }) => {
-            const current = this.appState;
-            const active: ActiveItinerary = {
-              id: crypto.randomUUID(),
-              destination,
-              startDate,
-              endDate,
-              style,
-              dayCount,
-              itinerary,
-              modifications: [],
-              createdAt: new Date().toISOString()
-            };
+            itinerary,
+            modifications: [],
+            createdAt: new Date().toISOString()
+          };
 
-            const memory = { ...current.memory };
-            if (!memory.pastDestinations.includes(destination)) {
-              memory.pastDestinations = [
-                ...memory.pastDestinations,
-                destination
-              ];
-            }
-            if (style && !memory.preferredStyles.includes(style)) {
-              memory.preferredStyles = [...memory.preferredStyles, style];
-            }
-
-            this.setState({
-              ...current,
-              activeItinerary: active,
-              memory
-            });
-            this.broadcast(JSON.stringify({ type: "itinerary-updated" }));
-            this.broadcast(JSON.stringify({ type: "memory-updated" }));
-            return {
-              success: true,
-              itineraryId: active.id,
-              dayCount
-            };
+          const memory = { ...current.memory };
+          if (!memory.pastDestinations.includes(destination)) {
+            memory.pastDestinations = [...memory.pastDestinations, destination];
           }
-        }),
-
-        //Feature 2: Adaptive Modification
-
-        getActiveItinerary: tool({
-          description:
-            "Read the current active itinerary. Use this before modifying so you know what to change.",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const it = this.appState.activeItinerary;
-            if (!it) return { active: false, message: "No active itinerary." };
-            return { active: true, ...it };
+          if (style && !memory.preferredStyles.includes(style)) {
+            memory.preferredStyles = [...memory.preferredStyles, style];
           }
+
+          this.setState({
+            ...current,
+            activeItinerary: active,
+            memory
+          });
+          this.broadcast(JSON.stringify({ type: "itinerary-updated" }));
+          this.broadcast(JSON.stringify({ type: "memory-updated" }));
+          return {
+            success: true,
+            itineraryId: active.id,
+            dayCount
+          };
+        }
+      }),
+
+      //Feature 2: Adaptive Modification
+
+      getActiveItinerary: tool({
+        description:
+          "Read the current active itinerary. Use this before modifying so you know what to change.",
+        inputSchema: z.object({}),
+        execute: async () => {
+          const it = this.appState.activeItinerary;
+          if (!it) return { active: false, message: "No active itinerary." };
+          return { active: true, ...it };
+        }
+      }),
+
+      modifyItinerary: tool({
+        description:
+          "Replace the active itinerary text after you adapt it (full updated text).",
+        inputSchema: z.object({
+          reason: z
+            .string()
+            .describe(
+              "Why: weather, fatigue, time_constraint, preference_change, etc."
+            ),
+          updatedItinerary: z
+            .string()
+            .describe("Complete updated itinerary as readable text")
         }),
-
-        modifyItinerary: tool({
-          description:
-            "Replace the active itinerary text after you adapt it (full updated text).",
-          inputSchema: z.object({
-            reason: z
-              .string()
-              .describe(
-                "Why: weather, fatigue, time_constraint, preference_change, etc."
-              ),
-            updatedItinerary: z
-              .string()
-              .describe("Complete updated itinerary as readable text")
-          }),
-          execute: async ({ reason, updatedItinerary }) => {
-            const current = this.appState;
-            if (!current.activeItinerary) {
-              return { success: false, message: "No active itinerary." };
-            }
-
-            const modified: ActiveItinerary = {
-              ...current.activeItinerary,
-              itinerary: updatedItinerary,
-              modifications: [
-                ...current.activeItinerary.modifications,
-                { reason, timestamp: new Date().toISOString() }
-              ]
-            };
-
-            this.setState({ ...current, activeItinerary: modified });
-            this.broadcast(JSON.stringify({ type: "itinerary-updated" }));
-            return {
-              success: true,
-              reason,
-              totalModifications: modified.modifications.length
-            };
+        execute: async ({ reason, updatedItinerary }) => {
+          const current = this.appState;
+          if (!current.activeItinerary) {
+            return { success: false, message: "No active itinerary." };
           }
+
+          const modified: ActiveItinerary = {
+            ...current.activeItinerary,
+            itinerary: updatedItinerary,
+            modifications: [
+              ...current.activeItinerary.modifications,
+              { reason, timestamp: new Date().toISOString() }
+            ]
+          };
+
+          this.setState({ ...current, activeItinerary: modified });
+          this.broadcast(JSON.stringify({ type: "itinerary-updated" }));
+          return {
+            success: true,
+            reason,
+            totalModifications: modified.modifications.length
+          };
+        }
+      }),
+
+      // ── Feature 3: User Memory ──
+
+      rememberPreference: tool({
+        description:
+          "Save a user preference to long-term memory. Call this proactively when you learn something about the user.",
+        inputSchema: z.object({
+          type: z
+            .enum([
+              "style",
+              "budget",
+              "likedPlace",
+              "dislikedPlace",
+              "dietary",
+              "note"
+            ])
+            .describe("Category of preference"),
+          value: z.string().describe("The preference value to remember")
         }),
+        execute: async ({ type, value }) => {
+          const current = this.appState;
+          const memory = { ...current.memory };
+          const v = value.trim();
 
-        // ── Feature 3: User Memory ──
-
-        rememberPreference: tool({
-          description:
-            "Save a user preference to long-term memory. Call this proactively when you learn something about the user.",
-          inputSchema: z.object({
-            type: z
-              .enum([
-                "style",
-                "budget",
-                "likedPlace",
-                "dislikedPlace",
-                "dietary",
-                "note"
-              ])
-              .describe("Category of preference"),
-            value: z.string().describe("The preference value to remember")
-          }),
-          execute: async ({ type, value }) => {
-            const current = this.appState;
-            const memory = { ...current.memory };
-            const v = value.trim();
-
-            switch (type) {
-              case "style":
-                if (!memory.preferredStyles.includes(v))
-                  memory.preferredStyles = [...memory.preferredStyles, v];
-                break;
-              case "budget":
-                memory.budgetLevel = v;
-                break;
-              case "likedPlace":
-                if (!memory.likedPlaceTypes.includes(v))
-                  memory.likedPlaceTypes = [...memory.likedPlaceTypes, v];
-                break;
-              case "dislikedPlace":
-                if (!memory.dislikedPlaceTypes.includes(v))
-                  memory.dislikedPlaceTypes = [...memory.dislikedPlaceTypes, v];
-                break;
-              case "dietary":
-                if (!memory.dietaryRestrictions.includes(v))
-                  memory.dietaryRestrictions = [
-                    ...memory.dietaryRestrictions,
-                    v
-                  ];
-                break;
-              case "note":
-                memory.notes = [...memory.notes, v];
-                break;
-            }
-
-            this.setState({ ...current, memory });
-            this.broadcast(JSON.stringify({ type: "memory-updated" }));
-            return { success: true, remembered: `${type}: ${v}` };
+          switch (type) {
+            case "style":
+              if (!memory.preferredStyles.includes(v))
+                memory.preferredStyles = [...memory.preferredStyles, v];
+              break;
+            case "budget":
+              memory.budgetLevel = v;
+              break;
+            case "likedPlace":
+              if (!memory.likedPlaceTypes.includes(v))
+                memory.likedPlaceTypes = [...memory.likedPlaceTypes, v];
+              break;
+            case "dislikedPlace":
+              if (!memory.dislikedPlaceTypes.includes(v))
+                memory.dislikedPlaceTypes = [...memory.dislikedPlaceTypes, v];
+              break;
+            case "dietary":
+              if (!memory.dietaryRestrictions.includes(v))
+                memory.dietaryRestrictions = [...memory.dietaryRestrictions, v];
+              break;
+            case "note":
+              memory.notes = [...memory.notes, v];
+              break;
           }
+
+          this.setState({ ...current, memory });
+          this.broadcast(JSON.stringify({ type: "memory-updated" }));
+          return { success: true, remembered: `${type}: ${v}` };
+        }
+      }),
+
+      getMemory: tool({
+        description: "Read all stored user memory / preferences",
+        inputSchema: z.object({}),
+        execute: async () => this.appState.memory
+      }),
+
+      // ── Trip management ──
+
+      saveTrip: tool({
+        description:
+          "Archive the active itinerary to saved trips (keeps it even after starting a new trip)",
+        inputSchema: z.object({
+          summary: z.string().describe("One-line summary of the trip")
         }),
-
-        getMemory: tool({
-          description: "Read all stored user memory / preferences",
-          inputSchema: z.object({}),
-          execute: async () => this.appState.memory
-        }),
-
-        // ── Trip management ──
-
-        saveTrip: tool({
-          description:
-            "Archive the active itinerary to saved trips (keeps it even after starting a new trip)",
-          inputSchema: z.object({
-            summary: z.string().describe("One-line summary of the trip")
-          }),
-          execute: async ({ summary }) => {
-            const current = this.appState;
-            if (!current.activeItinerary) {
-              return { success: false, message: "No active itinerary." };
-            }
-            const it = current.activeItinerary;
-            const saved: SavedTrip = {
-              id: crypto.randomUUID(),
-              destination: it.destination,
-              startDate: it.startDate,
-              endDate: it.endDate,
-              style: it.style,
-              summary,
-              itinerary: it.itinerary,
-              savedAt: new Date().toISOString()
-            };
-            this.setState({
-              ...current,
-              savedTrips: [...current.savedTrips, saved]
-            });
-            this.broadcast(JSON.stringify({ type: "trips-updated" }));
-            return {
-              success: true,
-              tripId: saved.id,
-              message: `Trip to ${it.destination} archived!`
-            };
+        execute: async ({ summary }) => {
+          const current = this.appState;
+          if (!current.activeItinerary) {
+            return { success: false, message: "No active itinerary." };
           }
-        }),
+          const it = current.activeItinerary;
+          const saved: SavedTrip = {
+            id: crypto.randomUUID(),
+            destination: it.destination,
+            startDate: it.startDate,
+            endDate: it.endDate,
+            style: it.style,
+            summary,
+            itinerary: it.itinerary,
+            savedAt: new Date().toISOString()
+          };
+          this.setState({
+            ...current,
+            savedTrips: [...current.savedTrips, saved]
+          });
+          this.broadcast(JSON.stringify({ type: "trips-updated" }));
+          return {
+            success: true,
+            tripId: saved.id,
+            message: `Trip to ${it.destination} archived!`
+          };
+        }
+      }),
 
-        listSavedTrips: tool({
-          description: "List all archived trip plans",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const { savedTrips } = this.appState;
-            if (savedTrips.length === 0) return "No saved trips yet.";
-            return savedTrips.map((t) => ({
-              id: t.id,
-              destination: t.destination,
-              dates: `${t.startDate} → ${t.endDate}`,
-              style: t.style,
-              summary: t.summary
-            }));
+      listSavedTrips: tool({
+        description: "List all archived trip plans",
+        inputSchema: z.object({}),
+        execute: async () => {
+          const { savedTrips } = this.appState;
+          if (savedTrips.length === 0) return "No saved trips yet.";
+          return savedTrips.map((t) => ({
+            id: t.id,
+            destination: t.destination,
+            dates: `${t.startDate} → ${t.endDate}`,
+            style: t.style,
+            summary: t.summary
+          }));
+        }
+      }),
+
+      deleteSavedTrip: tool({
+        description:
+          "Delete a saved trip — requires user confirmation (approval)",
+        inputSchema: z.object({
+          tripId: z.string().describe("Trip ID to delete")
+        }),
+        needsApproval: async () => true,
+        execute: async ({ tripId }) => {
+          const current = this.appState;
+          const trip = current.savedTrips.find((t) => t.id === tripId);
+          if (!trip) return { success: false, message: "Trip not found." };
+          this.setState({
+            ...current,
+            savedTrips: current.savedTrips.filter((t) => t.id !== tripId)
+          });
+          this.broadcast(JSON.stringify({ type: "trips-updated" }));
+          return {
+            success: true,
+            message: `Deleted trip to ${trip.destination}.`
+          };
+        }
+      }),
+
+      // Utility tools
+
+      getUserTimezone: tool({
+        description:
+          "Get the user's timezone from their browser for scheduling accuracy",
+        inputSchema: z.object({})
+      }),
+
+      scheduleReminder: tool({
+        description:
+          "Schedule a trip reminder — departure alert, booking deadline, packing reminder",
+        inputSchema: scheduleSchema,
+        execute: async ({ when, description }) => {
+          if (when.type === "no-schedule") return "Not a valid schedule input";
+          const input =
+            when.type === "scheduled"
+              ? when.date
+              : when.type === "delayed"
+                ? when.delayInSeconds
+                : when.type === "cron"
+                  ? when.cron
+                  : null;
+          if (!input) return "Invalid schedule type";
+          try {
+            this.schedule(input, "executeTask", description);
+            return `Reminder scheduled: "${description}" (${when.type}: ${input})`;
+          } catch (error) {
+            return `Error scheduling: ${error}`;
           }
-        }),
+        }
+      }),
 
-        deleteSavedTrip: tool({
-          description:
-            "Delete a saved trip — requires user confirmation (approval)",
-          inputSchema: z.object({
-            tripId: z.string().describe("Trip ID to delete")
-          }),
-          needsApproval: async () => true,
-          execute: async ({ tripId }) => {
-            const current = this.appState;
-            const trip = current.savedTrips.find((t) => t.id === tripId);
-            if (!trip) return { success: false, message: "Trip not found." };
-            this.setState({
-              ...current,
-              savedTrips: current.savedTrips.filter((t) => t.id !== tripId)
-            });
-            this.broadcast(JSON.stringify({ type: "trips-updated" }));
-            return {
-              success: true,
-              message: `Deleted trip to ${trip.destination}.`
-            };
-          }
-        }),
-
-        // Utility tools
-
-        getUserTimezone: tool({
-          description:
-            "Get the user's timezone from their browser for scheduling accuracy",
-          inputSchema: z.object({})
-        }),
-
-        scheduleReminder: tool({
-          description:
-            "Schedule a trip reminder — departure alert, booking deadline, packing reminder",
-          inputSchema: scheduleSchema,
-          execute: async ({ when, description }) => {
-            if (when.type === "no-schedule") return "Not a valid schedule input";
-            const input =
-              when.type === "scheduled"
-                ? when.date
-                : when.type === "delayed"
-                  ? when.delayInSeconds
-                  : when.type === "cron"
-                    ? when.cron
-                    : null;
-            if (!input) return "Invalid schedule type";
-            try {
-              this.schedule(input, "executeTask", description);
-              return `Reminder scheduled: "${description}" (${when.type}: ${input})`;
-            } catch (error) {
-              return `Error scheduling: ${error}`;
-            }
-          }
-        }),
-
-        getScheduledReminders: tool({
-          description: "List all scheduled reminders",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const tasks = this.getSchedules();
-            return tasks.length > 0 ? tasks : "No reminders scheduled.";
-          }
-        }),
+      getScheduledReminders: tool({
+        description: "List all scheduled reminders",
+        inputSchema: z.object({}),
+        execute: async () => {
+          const tasks = this.getSchedules();
+          return tasks.length > 0 ? tasks : "No reminders scheduled.";
+        }
+      }),
 
       cancelReminder: tool({
         description: "Cancel a scheduled reminder by ID",
