@@ -50,8 +50,8 @@ With the default Workers AI **remote** setup, Wrangler may expect a workers.dev 
 ```bash
 npm run deploy
 ```
-live demo URL[https://trip-planner.rkdgus5468.workers.dev]
 
+live demo URL[https://trip-planner.rkdgus5468.workers.dev]
 
 ## Project layout
 

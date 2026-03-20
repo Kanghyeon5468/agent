@@ -1284,144 +1284,148 @@ RULES:
     };
 
     const stream = createUIMessageStream({
-  originalMessages: this.messages,
-  execute: async ({ writer }) => {
-    writer.write({ type: "start" });
+      originalMessages: this.messages,
+      execute: async ({ writer }) => {
+        writer.write({ type: "start" });
 
-    try {
-      const result = await generateText({
-        model: workersai(WORKERS_AI_CHAT_MODEL),
-        maxOutputTokens: 512,
-        temperature: 0.6,
-        toolChoice: "auto",
-        system: systemPrompt,
-        messages: prunedModelMessages,
-        tools: tripTools,
-        stopWhen: stepCountIs(5),
-        abortSignal: options?.abortSignal
-      });
+        try {
+          const result = await generateText({
+            model: workersai(WORKERS_AI_CHAT_MODEL),
+            maxOutputTokens: 512,
+            temperature: 0.6,
+            toolChoice: "auto",
+            system: systemPrompt,
+            messages: prunedModelMessages,
+            tools: tripTools,
+            stopWhen: stepCountIs(5),
+            abortSignal: options?.abortSignal
+          });
 
-      const knownToolNames = new Set(Object.keys(tripTools));
-      const flatContent = result.steps.flatMap((s) => s.content);
-      const skipToolCallIds =
-        toolCallIdsToSkipForDuplicateStateTools(flatContent);
+          const knownToolNames = new Set(Object.keys(tripTools));
+          const flatContent = result.steps.flatMap((s) => s.content);
+          const skipToolCallIds =
+            toolCallIdsToSkipForDuplicateStateTools(flatContent);
 
-      const emittedToolInputIds = new Set<string>();
-      const emittedToolOutputIds = new Set<string>();
-      let emittedAssistantTextChars = 0;
+          const emittedToolInputIds = new Set<string>();
+          const emittedToolOutputIds = new Set<string>();
+          let emittedAssistantTextChars = 0;
 
-      for (const step of result.steps) {
-        writer.write({ type: "start-step" });
+          for (const step of result.steps) {
+            writer.write({ type: "start-step" });
 
-        const parts = step.content;
-        const soloTextPart =
-          parts.length === 1 && parts[0].type === "text"
-            ? (parts[0] as { type: "text"; text: string })
-            : null;
-        const soloBody = soloTextPart?.text?.trim() ?? "";
-        const embedded = soloBody.startsWith("{")
-          ? parseEmbeddedFunctionCall(soloBody)
-          : null;
-        const recovered =
-          embedded &&
-          knownToolNames.has(embedded.name) &&
-          !step.toolCalls.some((tc) => tc.toolName === embedded.name);
+            const parts = step.content;
+            const soloTextPart =
+              parts.length === 1 && parts[0].type === "text"
+                ? (parts[0] as { type: "text"; text: string })
+                : null;
+            const soloBody = soloTextPart?.text?.trim() ?? "";
+            const embedded = soloBody.startsWith("{")
+              ? parseEmbeddedFunctionCall(soloBody)
+              : null;
+            const recovered =
+              embedded &&
+              knownToolNames.has(embedded.name) &&
+              !step.toolCalls.some((tc) => tc.toolName === embedded.name);
 
-        if (recovered && embedded) {
-          await emitRecoveredToolCall(
-            writer,
-            embedded,
-            tripTools as Record<string, TripToolEntry>
-          );
-          emittedAssistantTextChars += 80;
-        } else {
-          for (const part of parts) {
-            if (part.type === "text" && part.text) {
-              emittedAssistantTextChars += part.text.length;
-              const tid = generateId();
-              writer.write({ type: "text-start", id: tid });
-              writer.write({ type: "text-delta", id: tid, delta: part.text });
-              writer.write({ type: "text-end", id: tid });
-            } else if (part.type === "tool-call") {
-              if (skipToolCallIds.has(part.toolCallId)) continue;
-              if (emittedToolInputIds.has(part.toolCallId)) continue;
-              emittedToolInputIds.add(part.toolCallId);
+            if (recovered && embedded) {
+              await emitRecoveredToolCall(
+                writer,
+                embedded,
+                tripTools as Record<string, TripToolEntry>
+              );
+              emittedAssistantTextChars += 80;
+            } else {
+              for (const part of parts) {
+                if (part.type === "text" && part.text) {
+                  emittedAssistantTextChars += part.text.length;
+                  const tid = generateId();
+                  writer.write({ type: "text-start", id: tid });
+                  writer.write({
+                    type: "text-delta",
+                    id: tid,
+                    delta: part.text
+                  });
+                  writer.write({ type: "text-end", id: tid });
+                } else if (part.type === "tool-call") {
+                  if (skipToolCallIds.has(part.toolCallId)) continue;
+                  if (emittedToolInputIds.has(part.toolCallId)) continue;
+                  emittedToolInputIds.add(part.toolCallId);
 
-              writer.write({
-                type: "tool-input-available",
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: normalizeToolCallInput(part.input),
-                providerExecuted: true
-              });
-            } else if (part.type === "tool-result") {
-              if (skipToolCallIds.has(part.toolCallId)) continue;
-              if (emittedToolOutputIds.has(part.toolCallId)) continue;
-              emittedToolOutputIds.add(part.toolCallId);
+                  writer.write({
+                    type: "tool-input-available",
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    input: normalizeToolCallInput(part.input),
+                    providerExecuted: true
+                  });
+                } else if (part.type === "tool-result") {
+                  if (skipToolCallIds.has(part.toolCallId)) continue;
+                  if (emittedToolOutputIds.has(part.toolCallId)) continue;
+                  emittedToolOutputIds.add(part.toolCallId);
 
-              writer.write({
-                type: "tool-output-available",
-                toolCallId: part.toolCallId,
-                output: part.output,
-                providerExecuted: true
-              });
+                  writer.write({
+                    type: "tool-output-available",
+                    toolCallId: part.toolCallId,
+                    output: part.output,
+                    providerExecuted: true
+                  });
+                }
+              }
             }
+
+            writer.write({ type: "finish-step" });
           }
+
+          const touchedItineraryThisTurn = flatContent.some(
+            (p) =>
+              p.type === "tool-call" &&
+              (p as { toolName?: string }).toolName === "createItinerary"
+          );
+          const touchedModifyThisTurn = flatContent.some(
+            (p) =>
+              p.type === "tool-call" &&
+              (p as { toolName?: string }).toolName === "modifyItinerary"
+          );
+          const active = this.appState.activeItinerary;
+          const planText = active?.itinerary?.trim() ?? "";
+          const needsPlanFallback =
+            (touchedItineraryThisTurn || touchedModifyThisTurn) &&
+            emittedAssistantTextChars < 400 &&
+            planText.length > 0;
+
+          if (needsPlanFallback) {
+            const tid = generateId();
+            const header =
+              touchedModifyThisTurn && !touchedItineraryThisTurn
+                ? "\n\n### Updated itinerary\n\n"
+                : "\n\n### Your trip plan\n\n";
+            writer.write({ type: "text-start", id: tid });
+            writer.write({
+              type: "text-delta",
+              id: tid,
+              delta: `${header}${planText}\n`
+            });
+            writer.write({ type: "text-end", id: tid });
+          }
+
+          writer.write({
+            type: "finish",
+            finishReason: result.finishReason
+          });
+        } catch (error) {
+          const tid = generateId();
+          writer.write({ type: "text-start", id: tid });
+          writer.write({
+            type: "text-delta",
+            id: tid,
+            delta: `Server error: ${error instanceof Error ? error.message : String(error)}`
+          });
+          writer.write({ type: "text-end", id: tid });
+          writer.write({ type: "finish", finishReason: "error" });
+          console.error("onChatMessage failed", error);
         }
-
-        writer.write({ type: "finish-step" });
       }
-
-      const touchedItineraryThisTurn = flatContent.some(
-        (p) =>
-          p.type === "tool-call" &&
-          (p as { toolName?: string }).toolName === "createItinerary"
-      );
-      const touchedModifyThisTurn = flatContent.some(
-        (p) =>
-          p.type === "tool-call" &&
-          (p as { toolName?: string }).toolName === "modifyItinerary"
-      );
-      const active = this.appState.activeItinerary;
-      const planText = active?.itinerary?.trim() ?? "";
-      const needsPlanFallback =
-        (touchedItineraryThisTurn || touchedModifyThisTurn) &&
-        emittedAssistantTextChars < 400 &&
-        planText.length > 0;
-
-      if (needsPlanFallback) {
-        const tid = generateId();
-        const header =
-          touchedModifyThisTurn && !touchedItineraryThisTurn
-            ? "\n\n### Updated itinerary\n\n"
-            : "\n\n### Your trip plan\n\n";
-        writer.write({ type: "text-start", id: tid });
-        writer.write({
-          type: "text-delta",
-          id: tid,
-          delta: `${header}${planText}\n`
-        });
-        writer.write({ type: "text-end", id: tid });
-      }
-
-      writer.write({
-        type: "finish",
-        finishReason: result.finishReason
-      });
-    } catch (error) {
-      const tid = generateId();
-      writer.write({ type: "text-start", id: tid });
-      writer.write({
-        type: "text-delta",
-        id: tid,
-        delta: `Server error: ${error instanceof Error ? error.message : String(error)}`
-      });
-      writer.write({ type: "text-end", id: tid });
-      writer.write({ type: "finish", finishReason: "error" });
-      console.error("onChatMessage failed", error);
-    }
-  }
-});
+    });
 
     return createUIMessageStreamResponse({ stream });
   }
