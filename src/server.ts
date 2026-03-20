@@ -3,32 +3,25 @@ import { routeAgentRequest, callable, type Schedule } from "agents";
 import { getSchedulePrompt, scheduleSchema } from "agents/schedule";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
-  streamText,
+  generateText,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   convertToModelMessages,
   pruneMessages,
   tool,
-  stepCountIs
+  stepCountIs,
+  generateId
 } from "ai";
 import { z } from "zod";
 
-// ── Types ────────────────────────────────────────────────────────────────
+/**
+ * Llama 3.3 fp8-fast often emits fake tool JSON as plain assistant text instead of
+ * native `tool_calls`, so the AI SDK never executes tools. Llama 3.1 70B follows
+ * Workers AI tool calling more reliably for this stack.
+ */
+const WORKERS_AI_CHAT_MODEL = "@cf/meta/llama-3.1-70b-instruct";
 
-interface Activity {
-  time: string;
-  title: string;
-  description: string;
-  type: string;
-  location: string;
-  duration: string;
-  indoor: boolean;
-}
-
-interface DayPlan {
-  day: number;
-  date: string;
-  theme: string;
-  activities: Activity[];
-}
+// Types 
 
 interface ActiveItinerary {
   id: string;
@@ -36,7 +29,8 @@ interface ActiveItinerary {
   startDate: string;
   endDate: string;
   style: string;
-  days: DayPlan[];
+  dayCount: number;
+  itinerary: string;
   modifications: Array<{ reason: string; timestamp: string }>;
   createdAt: string;
 }
@@ -48,7 +42,7 @@ interface SavedTrip {
   endDate: string;
   style: string;
   summary: string;
-  days: DayPlan[];
+  itinerary: string;
   savedAt: string;
 }
 
@@ -101,30 +95,6 @@ function defaultState(): TripPlannerState {
     memory: { ...DEFAULT_MEMORY }
   };
 }
-
-// Reusable zod schemas for tool inputs
-const activitySchema = z.object({
-  time: z.string().describe("Time in HH:MM format, e.g. '09:00'"),
-  title: z.string().describe("Activity name"),
-  description: z.string().describe("Brief description with insider tips"),
-  type: z
-    .string()
-    .describe(
-      "Category: sightseeing, food, shopping, nature, museum, nightlife, relaxation, transport"
-    ),
-  location: z.string().describe("Specific place name"),
-  duration: z.string().describe("e.g. '2 hours', '30 minutes'"),
-  indoor: z.boolean().describe("true = indoor activity, false = outdoor")
-});
-
-const dayPlanSchema = z.object({
-  day: z.number().describe("Day number starting from 1"),
-  date: z.string().describe("Date in YYYY-MM-DD format"),
-  theme: z
-    .string()
-    .describe("Day theme, e.g. 'Historic Seoul', 'Street Food Adventure'"),
-  activities: z.array(activitySchema)
-});
 
 const MONTHS = [
   "january",
@@ -623,7 +593,7 @@ const DESTINATIONS: Record<string, DestinationInfo> = {
   }
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// Helpers
 
 function getWeather(destination: string, month: string) {
   const key = destination.toLowerCase().trim();
@@ -679,7 +649,7 @@ function getWeather(destination: string, month: string) {
 }
 
 function summarizeItinerary(it: ActiveItinerary): string {
-  return `${it.destination} | ${it.startDate} → ${it.endDate} | Style: ${it.style} | ${it.days.length} day(s) | Modified ${it.modifications.length} time(s)`;
+  return `${it.destination} | ${it.startDate} → ${it.endDate} | Style: ${it.style} | ${it.dayCount} day(s) | Modified ${it.modifications.length} time(s)`;
 }
 
 function summarizeMemory(mem: UserMemory): string {
@@ -699,7 +669,138 @@ function summarizeMemory(mem: UserMemory): string {
   return parts.length > 0 ? parts.join("\n") : "No memories yet.";
 }
 
-// ── Agent ────────────────────────────────────────────────────────────────
+/** Some Workers AI models print `{"type":"function",...}` as plain text instead of native tool_calls. */
+function parseEmbeddedFunctionCall(text: string): {
+  name: string;
+  args: Record<string, unknown>;
+} | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.type !== "function" || typeof parsed.name !== "string") return null;
+    const rawParams = parsed.parameters ?? parsed.arguments;
+    if (typeof rawParams === "string") {
+      return {
+        name: parsed.name,
+        args: JSON.parse(rawParams) as Record<string, unknown>
+      };
+    }
+    if (rawParams && typeof rawParams === "object" && !Array.isArray(rawParams)) {
+      return { name: parsed.name, args: rawParams as Record<string, unknown> };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeToolCallInput(input: unknown): unknown {
+  if (typeof input === "string") {
+    try {
+      return JSON.parse(input);
+    } catch {
+      return input;
+    }
+  }
+  return input;
+}
+
+type TripToolEntry = {
+  execute?: (input: unknown) => Promise<unknown>;
+};
+
+/** Tools that mutate trip state — show only the last call per name in one assistant turn (avoids 8× duplicate cards). */
+const DEDUPE_UI_LAST_ONLY_TOOL_NAMES = new Set([
+  "createItinerary",
+  "modifyItinerary"
+]);
+
+function toolCallIdsToSkipForDuplicateStateTools(
+  parts: Array<{ type: string; toolName?: string; toolCallId?: string }>
+): Set<string> {
+  const skip = new Set<string>();
+  for (const toolName of DEDUPE_UI_LAST_ONLY_TOOL_NAMES) {
+    let lastCallId: string | undefined;
+    for (const p of parts) {
+      if (p.type === "tool-call" && p.toolName === toolName && p.toolCallId) {
+        lastCallId = p.toolCallId;
+      }
+    }
+    if (!lastCallId) continue;
+    for (const p of parts) {
+      if (p.type === "tool-call" && p.toolName === toolName && p.toolCallId) {
+        if (p.toolCallId !== lastCallId) skip.add(p.toolCallId);
+      }
+    }
+  }
+  return skip;
+}
+
+/** Run a tool that the model printed as JSON text and emit matching UI stream chunks. */
+async function emitRecoveredToolCall(
+  // UIMessageStreamWriter.write expects typed chunks; we emit the same shapes as streamText.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  writer: { write: (chunk: any) => void },
+  embedded: { name: string; args: Record<string, unknown> },
+  tripTools: Record<string, TripToolEntry>
+): Promise<void> {
+  const t = tripTools[embedded.name];
+  if (!t?.execute) return;
+
+  const args = { ...embedded.args };
+  if (embedded.name === "createItinerary") {
+    if (typeof args.dayCount === "string") args.dayCount = Number(args.dayCount);
+    if (
+      typeof args.itinerary === "string" &&
+      (args.itinerary.includes("Full itinerary as readable text") ||
+        args.itinerary.length < 40)
+    ) {
+      args.itinerary = `Day 1–${args.dayCount}: Outline for ${args.destination}. Ask me to expand with hour-by-hour detail.`;
+    }
+  }
+  if (embedded.name === "estimateBudget") {
+    if (typeof args.days === "string") args.days = Number(args.days);
+    if (typeof args.travelers === "string")
+      args.travelers = Number(args.travelers);
+  }
+
+  const explainId = generateId();
+  writer.write({ type: "text-start", id: explainId });
+  writer.write({
+    type: "text-delta",
+    id: explainId,
+    delta: "Running saved tools (recovered from model output)…\n\n"
+  });
+  writer.write({ type: "text-end", id: explainId });
+
+  const toolCallId = generateId();
+  writer.write({
+    type: "tool-input-available",
+    toolCallId,
+    toolName: embedded.name,
+    input: args,
+    providerExecuted: true
+  });
+  try {
+    const output = await t.execute(args);
+    writer.write({
+      type: "tool-output-available",
+      toolCallId,
+      output,
+      providerExecuted: true
+    });
+  } catch (err) {
+    writer.write({
+      type: "tool-output-error",
+      toolCallId,
+      errorText: err instanceof Error ? err.message : String(err),
+      providerExecuted: true
+    });
+  }
+}
+
+// Agent
 
 export class ChatAgent extends AIChatAgent<Env> {
   initialState: TripPlannerState = defaultState();
@@ -738,59 +839,40 @@ export class ChatAgent extends AIChatAgent<Env> {
     const state = this.appState;
     const hasActiveTrip = state.activeItinerary !== null;
 
-    const result = streamText({
-      model: workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
-      system: `You are "Trip Planner", an adaptive AI travel assistant with persistent memory.
+    const systemPrompt = `You are Trip Planner: an adaptive travel assistant with memory. Always respond in English (itineraries, explanations, and tips), even if the user writes in another language.
 
-## YOUR 3 CORE ABILITIES
+TOOLS (the platform runs these for you — do NOT paste JSON like {"type":"function"...} in your message):
+1) Plan: searchDestination → getWeatherForecast → estimateBudget (if useful) → write a clear day-by-day plan in your reply → createItinerary (same text as itinerary).
+2) Adapt: getActiveItinerary → rewrite plan in reply → modifyItinerary (full updated text + reason).
+3) Memory: rememberPreference when you learn likes, style, diet, etc.
 
-### 1. ITINERARY GENERATION
-When user requests a trip plan:
-- Use searchDestination to research the destination
-- Use getWeatherForecast to check weather for their travel month
-- Use estimateBudget if budget is relevant
-- Generate a detailed day-by-day itinerary with specific times, places, and tips
-- ALWAYS call createItinerary to save it as the active trip
-- Apply remembered preferences from user memory below
+Itinerary text: use headings (Day 1, Day 2…), times, places, tips. Tag activities [indoor] or [outdoor] when relevant.
 
-### 2. ADAPTIVE MODIFICATION
-When user reports changed conditions, modify the active itinerary:
-- "Rain / bad weather" → Replace OUTDOOR activities (indoor=false) with INDOOR alternatives
-- "Tired / fatigue" → Replace active sightseeing with relaxed activities (cafés, spas, slow walks)
-- "Short on time" → Consolidate activities, remove lower-priority items, tighten schedule
-- "Preference change" → Swap activities to match (e.g. "more food" → add restaurant stops)
-Steps: call getActiveItinerary → analyze which days/activities need changes → call modifyItinerary with only the changed days
-Always explain what changed and why.
-
-### 3. USER MEMORY
-Proactively learn and remember user preferences:
-- When user mentions likes → call rememberPreference (type: "likedPlace", value: "museums")
-- When user's travel style is apparent → save it (type: "style", value: "foodie")
-- When dietary/physical constraints mentioned → save them
-- ALWAYS check memory below before generating new itineraries and apply preferences
-
-## USER MEMORY
+USER MEMORY:
 ${summarizeMemory(state.memory)}
 
-## ACTIVE ITINERARY
-${hasActiveTrip ? summarizeItinerary(state.activeItinerary!) : "None — no active trip yet."}
+ACTIVE TRIP:
+${hasActiveTrip ? summarizeItinerary(state.activeItinerary!) : "None"}
 
 ${getSchedulePrompt({ date: new Date() })}
 
-## RULES
-- Respond in the same language the user writes in
-- Be specific: use real place names, realistic times, practical tips
-- When modifying, only pass the CHANGED days to modifyItinerary (unchanged days are kept automatically)
-- After creating/modifying an itinerary, always present it nicely formatted to the user
-- Proactively call rememberPreference when you learn something about the user`,
-      messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
-        toolCalls: "before-last-2-messages"
-      }),
-      tools: {
-        // ── Feature 1: Itinerary Generation ──
+RULES:
+- Never output tool-call JSON as plain text; only use real tool calls.
+- Call createItinerary at most once per user request (after research tools). Do not repeat it in later steps.
+- ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat.
+- If the user gives city + duration, that is enough to plan (infer reasonable dates or ask one short question in English).
+- Be specific: real venues, realistic timing.
+- Keep every user-facing string in English.`;
 
-        searchDestination: tool({
+    const prunedModelMessages = pruneMessages({
+      messages: await convertToModelMessages(this.messages),
+      toolCalls: "before-last-2-messages"
+    });
+
+    const tripTools = {
+      // Feature 1: Itinerary Generation
+
+      searchDestination: tool({
           description:
             "Look up travel info about a destination: attractions, food, costs, tips",
           inputSchema: z.object({
@@ -831,11 +913,11 @@ ${getSchedulePrompt({ date: new Date() })}
           description: "Calculate estimated trip budget breakdown",
           inputSchema: z.object({
             destination: z.string().describe("City name"),
-            days: z.number().describe("Trip duration in days"),
+            days: z.coerce.number().describe("Trip duration in days"),
             budgetLevel: z
               .enum(["budget", "moderate", "luxury"])
               .describe("Spending tier"),
-            travelers: z
+            travelers: z.coerce
               .number()
               .default(1)
               .describe("Number of travelers")
@@ -882,7 +964,7 @@ ${getSchedulePrompt({ date: new Date() })}
 
         createItinerary: tool({
           description:
-            "Create a new day-by-day itinerary and set it as the active trip. ALWAYS call this after generating an itinerary.",
+            "Save the active trip. Pass the same day-by-day itinerary text you showed the user (plain text, not JSON).",
           inputSchema: z.object({
             destination: z.string(),
             startDate: z.string().describe("YYYY-MM-DD"),
@@ -892,22 +974,32 @@ ${getSchedulePrompt({ date: new Date() })}
               .describe(
                 "Travel style: adventure, relaxation, cultural, foodie, nightlife, family, romantic"
               ),
-            days: z.array(dayPlanSchema)
+            dayCount: z.coerce.number().describe("Number of days"),
+            itinerary: z
+              .string()
+              .describe("Full itinerary as readable text (headings, times, places)")
           }),
-          execute: async ({ destination, startDate, endDate, style, days }) => {
+          execute: async ({
+            destination,
+            startDate,
+            endDate,
+            style,
+            dayCount,
+            itinerary
+          }) => {
             const current = this.appState;
-            const itinerary: ActiveItinerary = {
+            const active: ActiveItinerary = {
               id: crypto.randomUUID(),
               destination,
               startDate,
               endDate,
               style,
-              days,
+              dayCount,
+              itinerary,
               modifications: [],
               createdAt: new Date().toISOString()
             };
 
-            // Also auto-learn from this creation
             const memory = { ...current.memory };
             if (!memory.pastDestinations.includes(destination)) {
               memory.pastDestinations = [
@@ -921,24 +1013,20 @@ ${getSchedulePrompt({ date: new Date() })}
 
             this.setState({
               ...current,
-              activeItinerary: itinerary,
+              activeItinerary: active,
               memory
             });
             this.broadcast(JSON.stringify({ type: "itinerary-updated" }));
             this.broadcast(JSON.stringify({ type: "memory-updated" }));
             return {
               success: true,
-              itineraryId: itinerary.id,
-              totalDays: days.length,
-              totalActivities: days.reduce(
-                (sum, d) => sum + d.activities.length,
-                0
-              )
+              itineraryId: active.id,
+              dayCount
             };
           }
         }),
 
-        // ── Feature 2: Adaptive Modification ──
+        //Feature 2: Adaptive Modification
 
         getActiveItinerary: tool({
           description:
@@ -953,35 +1041,26 @@ ${getSchedulePrompt({ date: new Date() })}
 
         modifyItinerary: tool({
           description:
-            "Modify the active itinerary. Only pass the days that changed — unchanged days are preserved automatically.",
+            "Replace the active itinerary text after you adapt it (full updated text).",
           inputSchema: z.object({
             reason: z
               .string()
               .describe(
                 "Why: weather, fatigue, time_constraint, preference_change, etc."
               ),
-            dayUpdates: z
-              .array(dayPlanSchema)
-              .describe("Only the day(s) that were modified")
+            updatedItinerary: z
+              .string()
+              .describe("Complete updated itinerary as readable text")
           }),
-          execute: async ({ reason, dayUpdates }) => {
+          execute: async ({ reason, updatedItinerary }) => {
             const current = this.appState;
             if (!current.activeItinerary) {
               return { success: false, message: "No active itinerary." };
             }
 
-            // Merge: replace only the specified days, keep the rest
-            const updatedDays = [...current.activeItinerary.days];
-            for (const update of dayUpdates) {
-              const idx = updatedDays.findIndex((d) => d.day === update.day);
-              if (idx !== -1) {
-                updatedDays[idx] = update;
-              }
-            }
-
             const modified: ActiveItinerary = {
               ...current.activeItinerary,
-              days: updatedDays,
+              itinerary: updatedItinerary,
               modifications: [
                 ...current.activeItinerary.modifications,
                 { reason, timestamp: new Date().toISOString() }
@@ -993,7 +1072,6 @@ ${getSchedulePrompt({ date: new Date() })}
             return {
               success: true,
               reason,
-              daysModified: dayUpdates.map((d) => d.day),
               totalModifications: modified.modifications.length
             };
           }
@@ -1083,7 +1161,7 @@ ${getSchedulePrompt({ date: new Date() })}
               endDate: it.endDate,
               style: it.style,
               summary,
-              days: it.days,
+              itinerary: it.itinerary,
               savedAt: new Date().toISOString()
             };
             this.setState({
@@ -1110,8 +1188,7 @@ ${getSchedulePrompt({ date: new Date() })}
               destination: t.destination,
               dates: `${t.startDate} → ${t.endDate}`,
               style: t.style,
-              summary: t.summary,
-              dayCount: t.days.length
+              summary: t.summary
             }));
           }
         }),
@@ -1139,7 +1216,7 @@ ${getSchedulePrompt({ date: new Date() })}
           }
         }),
 
-        // ── Utility tools ──
+        // Utility tools
 
         getUserTimezone: tool({
           description:
@@ -1180,26 +1257,143 @@ ${getSchedulePrompt({ date: new Date() })}
           }
         }),
 
-        cancelReminder: tool({
-          description: "Cancel a scheduled reminder by ID",
-          inputSchema: z.object({
-            reminderId: z.string().describe("Reminder ID to cancel")
-          }),
-          execute: async ({ reminderId }) => {
-            try {
-              this.cancelSchedule(reminderId);
-              return `Reminder ${reminderId} cancelled.`;
-            } catch (error) {
-              return `Error: ${error}`;
+      cancelReminder: tool({
+        description: "Cancel a scheduled reminder by ID",
+        inputSchema: z.object({
+          reminderId: z.string().describe("Reminder ID to cancel")
+        }),
+        execute: async ({ reminderId }) => {
+          try {
+            this.cancelSchedule(reminderId);
+            return `Reminder ${reminderId} cancelled.`;
+          } catch (error) {
+            return `Error: ${error}`;
+          }
+        }
+      })
+    };
+
+    const stream = createUIMessageStream({
+      originalMessages: this.messages,
+      execute: async ({ writer }) => {
+        const result = await generateText({
+          model: workersai(WORKERS_AI_CHAT_MODEL),
+          maxOutputTokens: 4096,
+          temperature: 0.6,
+          toolChoice: "auto",
+          system: systemPrompt,
+          messages: prunedModelMessages,
+          tools: tripTools,
+          stopWhen: stepCountIs(5),
+          abortSignal: options?.abortSignal
+        });
+
+        writer.write({ type: "start" });
+
+        const knownToolNames = new Set(Object.keys(tripTools));
+        const flatContent = result.steps.flatMap((s) => s.content);
+        const skipToolCallIds =
+          toolCallIdsToSkipForDuplicateStateTools(flatContent);
+
+        let emittedAssistantTextChars = 0;
+
+        for (const step of result.steps) {
+          writer.write({ type: "start-step" });
+
+          const parts = step.content;
+          const soloTextPart =
+            parts.length === 1 && parts[0].type === "text"
+              ? (parts[0] as { type: "text"; text: string })
+              : null;
+          const soloBody = soloTextPart?.text?.trim() ?? "";
+          const embedded = soloBody.startsWith("{")
+            ? parseEmbeddedFunctionCall(soloBody)
+            : null;
+          const recovered =
+            embedded &&
+            knownToolNames.has(embedded.name) &&
+            !step.toolCalls.some((tc) => tc.toolName === embedded.name);
+
+          if (recovered && embedded) {
+            await emitRecoveredToolCall(
+              writer,
+              embedded,
+              tripTools as Record<string, TripToolEntry>
+            );
+            emittedAssistantTextChars += 80;
+          } else {
+            for (const part of parts) {
+              if (part.type === "text" && part.text) {
+                emittedAssistantTextChars += part.text.length;
+                const tid = generateId();
+                writer.write({ type: "text-start", id: tid });
+                writer.write({ type: "text-delta", id: tid, delta: part.text });
+                writer.write({ type: "text-end", id: tid });
+              } else if (part.type === "tool-call") {
+                if (skipToolCallIds.has(part.toolCallId)) continue;
+                writer.write({
+                  type: "tool-input-available",
+                  toolCallId: part.toolCallId,
+                  toolName: part.toolName,
+                  input: normalizeToolCallInput(part.input),
+                  providerExecuted: true
+                });
+              } else if (part.type === "tool-result") {
+                if (skipToolCallIds.has(part.toolCallId)) continue;
+                writer.write({
+                  type: "tool-output-available",
+                  toolCallId: part.toolCallId,
+                  output: part.output,
+                  providerExecuted: true
+                });
+              }
             }
           }
-        })
-      },
-      stopWhen: stepCountIs(5),
-      abortSignal: options?.abortSignal
+
+          writer.write({ type: "finish-step" });
+        }
+
+        // If the model only ran tools and skipped prose, show the saved itinerary in-chat.
+        const touchedItineraryThisTurn = flatContent.some(
+          (p) =>
+            p.type === "tool-call" &&
+            (p as { toolName?: string }).toolName === "createItinerary"
+        );
+        const touchedModifyThisTurn = flatContent.some(
+          (p) =>
+            p.type === "tool-call" &&
+            (p as { toolName?: string }).toolName === "modifyItinerary"
+        );
+        const active = this.appState.activeItinerary;
+        const planText = active?.itinerary?.trim() ?? "";
+        const needsPlanFallback =
+          (touchedItineraryThisTurn || touchedModifyThisTurn) &&
+          emittedAssistantTextChars < 400 &&
+          planText.length > 0;
+
+        if (needsPlanFallback) {
+          const tid = generateId();
+          const header =
+            touchedModifyThisTurn && !touchedItineraryThisTurn
+              ? "\n\n### Updated itinerary\n\n"
+              : "\n\n### Your trip plan\n\n";
+          writer.write({ type: "text-start", id: tid });
+          writer.write({
+            type: "text-delta",
+            id: tid,
+            delta: `${header}${planText}\n`
+          });
+          writer.write({ type: "text-end", id: tid });
+        }
+
+        writer.write({
+          type: "finish",
+          finishReason: result.finishReason
+        });
+      }
     });
 
-    return result.toUIMessageStreamResponse();
+    return createUIMessageStreamResponse({ stream });
   }
 
   async executeTask(description: string, _task: Schedule<string>) {

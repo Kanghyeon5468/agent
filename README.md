@@ -1,66 +1,44 @@
-# AI Trip Planner
+# Trip Planner (Cloudflare Workers)
 
-An AI-powered travel planning assistant built on Cloudflare Workers, powered by the [Agents SDK](https://developers.cloudflare.com/agents/) and Llama 3.3.
+Chat app that plans trips with **tools**, **Durable Object state** (active itinerary, saved trips, user memory), and **Workers AI**. The assistant is instructed to behave like **Trip Planner**: adaptive, memory-aware, and **English-only** in all user-facing replies—even when the user writes in another language.
 
-Plan trips through natural conversation — get destination info, weather forecasts, budget estimates, day-by-day itineraries, and trip reminders, all with persistent memory across sessions.
+## What the agent is told to do
 
-## Architecture
+Behavior is defined in `src/server.ts` (`systemPrompt` in `onChatMessage`). In short:
 
-This project demonstrates all four components of a Cloudflare AI application:
+| Flow | Tools (order) | Outcome |
+|------|----------------|---------|
+| **New plan** | `searchDestination` → `getWeatherForecast` → `estimateBudget` (when useful) | Write a **full day-by-day plan in the chat** (headings, times, places, tips), then call **`createItinerary`** once with the **same** itinerary text. |
+| **Change plan** | `getActiveItinerary` | Rewrite the plan in the chat, then **`modifyItinerary`** with the full updated text plus a **reason**. |
+| **Preferences** | `rememberPreference` | When the user shares likes, style, diet, etc., persist them for later turns. |
 
-| Component | Implementation |
-|---|---|
-| **LLM** | Llama 3.3 70B on Workers AI |
-| **Workflow / Coordination** | Durable Objects for multi-step trip planning pipeline + task scheduling |
-| **User Input** | Real-time chat UI via Cloudflare Pages + WebSocket |
-| **Memory / State** | Persistent trip plans & user preferences via Durable Object state + SQLite message history |
+**Itinerary style:** `Day 1`, `Day 2`, …; realistic timing and venues; tag activities `[indoor]` or `[outdoor]` when it helps.
 
-## Features
+**Hard rules (mirrors the prompt):**
 
-- **Destination Search** — curated database of 10 popular destinations with attractions, food, costs, and local tips
-- **Weather Forecasts** — monthly climate data to help pick the best travel dates
-- **Budget Estimation** — detailed cost breakdowns by spending tier (budget / moderate / luxury)
-- **Itinerary Generation** — AI-crafted day-by-day plans tailored to your interests
-- **Trip Persistence** — save, list, and delete trip plans stored in Durable Object state
-- **Travel Preferences** — remembers your interests, budget level, travel style, and dietary restrictions
-- **Smart Scheduling** — set departure reminders, booking deadlines, and packing alerts
-- **Three Tool Patterns** — server-side auto-execute, client-side (browser timezone), and human-in-the-loop approval (trip deletion)
-- **Real-time UI** — WebSocket chat with streaming responses, dark/light mode, and debug inspector
+- Do **not** paste fake tool JSON (e.g. `{"type":"function",...}`) as assistant text—only real tool calls.
+- Call **`createItinerary` at most once** per user request (after research tools); don’t spam duplicate tool steps.
+- The **full itinerary must appear as normal assistant text** in the thread, not only behind tool UI—users must read the plan in chat.
+- City + duration is enough to plan (infer dates or ask **one short** clarifying question, in English).
+- **All user-facing strings in English.**
 
-## Quick Start
+## Implementation notes
+
+- **Model:** `@cf/meta/llama-3.1-70b-instruct` — chosen for more reliable Workers AI tool calling than the fp8-fast Llama 3.3 variant for this stack.
+- **Chat path:** `generateText` + `createUIMessageStream` / `createUIMessageStreamResponse` so tool calls from Workers AI are usable; includes recovery when the model still emits embedded function-call JSON as text.
+- **State:** Active itinerary and saved trips store **itinerary as a single string** (plus metadata). Curated destination data lives in `DESTINATIONS` in `server.ts`; unknown cities still work with generic tool output and general knowledge.
+- **Scheduling:** Uses the agents schedule helpers (`getSchedulePrompt`) for reminder-style context.
+
+## Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) to start planning.
+Open [http://localhost:5173](http://localhost:5173).
 
-### Example prompts
-
-- **"Plan a 5-day trip to Tokyo"** — full planning pipeline with destination search, weather, budget, and itinerary
-- **"Best time to visit Barcelona?"** — weather and seasonal recommendations
-- **"Show my saved trips"** — list persisted trip plans
-- **"Set my preferences: I love food and culture, moderate budget"** — update travel profile
-- **"Remind me to book flights in 2 days"** — scheduling
-
-## Project Structure
-
-```
-src/
-  server.ts    # Trip planner agent — tools, state management, scheduling
-  app.tsx      # Chat UI with saved trips panel
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
-```
-
-## Tech Stack
-
-- **Runtime**: Cloudflare Workers + Durable Objects
-- **AI Model**: Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) via Workers AI
-- **Framework**: [Agents SDK](https://developers.cloudflare.com/agents/) + [AI SDK](https://sdk.vercel.ai/)
-- **Frontend**: React 19 + [Kumo](https://kumo.cloudflare.com/) design system + Tailwind CSS 4
-- **State**: Durable Object state (trips & preferences) + SQLite (chat history)
+With the default Workers AI **remote** setup, Wrangler may expect a workers.dev subdomain. Toggling `ai.remote` in `wrangler.jsonc` can affect local behavior.
 
 ## Deploy
 
@@ -68,7 +46,15 @@ src/
 npm run deploy
 ```
 
-Your trip planner goes live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+## Project layout
+
+| Path | Role |
+|------|------|
+| `src/server.ts` | Agent, `systemPrompt`, tools, Durable Object state |
+| `src/app.tsx` | Chat UI, itinerary / saved trips panels, tool approval UI |
+| `src/client.tsx` | React entry |
+
+Stack: Cloudflare Workers, Durable Objects, `@cloudflare/ai-chat`, AI SDK (`ai`), React 19, Kumo, Tailwind CSS 4.
 
 ## License
 
