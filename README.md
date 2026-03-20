@@ -2,6 +2,11 @@
 
 Chat app that plans trips with **tools**, **Durable Object state** (active itinerary, saved trips, user memory), and **Workers AI**. The assistant is instructed to behave like **Trip Planner**: adaptive, memory-aware, and **English-only** in all user-facing replies—even when the user writes in another language.
 
+LLM: Workers AI with Llama 3.1 70B
+Coordination: Cloudflare Worker plus Durable Object
+Input: Chat UI
+Memory: Active itinerary, saved trips, user preferences
+
 ## What the agent is told to do
 
 Behavior is defined in `src/server.ts` (`systemPrompt` in `onChatMessage`). In short:
