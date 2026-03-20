@@ -565,6 +565,22 @@ function Chat() {
 
   const mCount = memoryCount(memory);
 
+  const resetUserMemory = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Reset all user memory? This clears preferences, past trips, notes, and related fields."
+      )
+    ) {
+      return;
+    }
+    try {
+      await agent.call("resetMemoryForClient", []);
+      await refreshMemory();
+    } catch (e) {
+      console.error("resetMemoryForClient:", e);
+    }
+  }, [agent, refreshMemory]);
+
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
       {/* Header */}
@@ -917,6 +933,14 @@ function Chat() {
                         {memory.notes.length > 0 && (
                           <MemoryRow label="Notes" values={memory.notes} />
                         )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full mt-2"
+                          onClick={() => void resetUserMemory()}
+                        >
+                          Reset all memory
+                        </Button>
                       </div>
                     )}
                   </Surface>
