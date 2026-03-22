@@ -13,6 +13,7 @@ import {
 } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
 import { Streamdown } from "streamdown";
+import remarkBreaks from "remark-breaks";
 import { Switch } from "@cloudflare/kumo";
 import {
   PaperPlaneRightIcon,
@@ -38,6 +39,11 @@ import {
   BookmarkSimpleIcon
 } from "@phosphor-icons/react";
 import { filterTravelStyleList } from "./travelStyleFilter";
+import {
+  formatAssistantItineraryText,
+  normalizeMessageNewlines,
+  splitAssistantTitleBody
+} from "./messageText";
 
 // ── Types (mirrors server)
 
@@ -1100,36 +1106,52 @@ function Chat() {
                     );
                   })}
 
-                {message.parts
-                  .filter((part) => part.type === "text")
-                  .map((part, i) => {
-                    const text = (part as { type: "text"; text: string }).text;
-                    if (!text) return null;
-
-                    if (isUser) {
+                {isUser
+                  ? message.parts
+                      .filter((part) => part.type === "text")
+                      .map((part, i) => {
+                        const text = (part as { type: "text"; text: string })
+                          .text;
+                        if (!text) return null;
+                        return (
+                          <div key={i} className="flex justify-end">
+                            <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-line">
+                              {normalizeMessageNewlines(text)}
+                            </div>
+                          </div>
+                        );
+                      })
+                  : (() => {
+                      const chunks = message.parts
+                        .filter((part) => part.type === "text")
+                        .map((p) => (p as { type: "text"; text: string }).text)
+                        .filter(Boolean);
+                      if (chunks.length === 0) return null;
+                      const formatted = formatAssistantItineraryText(
+                        chunks.join("\n\n")
+                      );
+                      const { title, body } =
+                        splitAssistantTitleBody(formatted);
                       return (
-                        <div key={i} className="flex justify-end">
-                          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
-                            {text}
+                        <div className="flex justify-start">
+                          <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed overflow-hidden">
+                            {title ? (
+                              <div className="px-4 pt-3 pb-2 text-base font-semibold text-kumo-default border-b border-kumo-line/60">
+                                {title}
+                              </div>
+                            ) : null}
+                            <Streamdown
+                              className={`sd-theme assistant-streamdown rounded-2xl rounded-bl-md ${title ? "px-4 pb-3 pt-2" : "p-3"}`}
+                              controls={false}
+                              isAnimating={isLastAssistant && isStreaming}
+                              remarkPlugins={[remarkBreaks]}
+                            >
+                              {title ? body : formatted}
+                            </Streamdown>
                           </div>
                         </div>
                       );
-                    }
-
-                    return (
-                      <div key={i} className="flex justify-start">
-                        <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                          <Streamdown
-                            className="sd-theme rounded-2xl rounded-bl-md p-3"
-                            controls={false}
-                            isAnimating={isLastAssistant && isStreaming}
-                          >
-                            {text}
-                          </Streamdown>
-                        </div>
-                      </div>
-                    );
-                  })}
+                    })()}
               </div>
             );
           })}

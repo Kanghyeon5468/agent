@@ -10,3 +10,14 @@ body,
   height: 100%;
   margin: 0;
 }
+
+/* Assistant reply body: normal weight; bold only where markdown uses ** */
+.assistant-streamdown.sd-theme {
+  font-weight: 400;
+}
+.assistant-streamdown.sd-theme :is(p, li, td, th) {
+  font-weight: 400;
+}
+.assistant-streamdown.sd-theme strong {
+  font-weight: 600;
+}

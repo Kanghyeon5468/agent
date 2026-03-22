@@ -891,9 +891,11 @@ RULES:
 - Never output tool-call JSON as plain text; only use real tool calls.
 - Call createItinerary at most once per user request (after research tools). Do not repeat it in later steps.
 - ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat. Ending the turn with only tool cards (especially only estimateBudget) is incorrect.
+- Put the same full itinerary in the chat as you pass to createItinerary (no extra short-only summary in chat). After any intro sentence, use a blank line before "Day 1:" or "### Day 1".
 - If the user gives city + duration, that is enough to plan (infer reasonable dates or ask one short question in English).
 - Be specific: real venues, realistic timing.
-- Keep every user-facing string in English.`;
+- Keep every user-facing string in English.
+- Use real line breaks between days and sections in your message — never the two-character sequence backslash + n as text.`;
 
     const prunedModelMessages = pruneMessages({
       messages: await convertToModelMessages(this.messages),
@@ -1350,7 +1352,7 @@ RULES:
 
           const emittedToolInputIds = new Set<string>();
           const emittedToolOutputIds = new Set<string>();
-          let emittedAssistantTextChars = 0;
+          let fullEmittedAssistantText = "";
 
           for (const step of result.steps) {
             writer.write({ type: "start-step" });
@@ -1375,11 +1377,10 @@ RULES:
                 embedded,
                 tripTools as Record<string, TripToolEntry>
               );
-              emittedAssistantTextChars += 80;
             } else {
               for (const part of parts) {
                 if (part.type === "text" && part.text) {
-                  emittedAssistantTextChars += part.text.length;
+                  fullEmittedAssistantText += part.text;
                   const tid = generateId();
                   writer.write({ type: "text-start", id: tid });
                   writer.write({
@@ -1430,10 +1431,24 @@ RULES:
           );
           const active = this.appState.activeItinerary;
           const planText = active?.itinerary?.trim() ?? "";
+          const normEmitted = fullEmittedAssistantText
+            .replace(/\s+/g, " ")
+            .toLowerCase();
+          const normPlan = planText.replace(/\s+/g, " ").toLowerCase();
+          const planPrefix = normPlan.slice(0, 100);
+          const prefixSeenInChat =
+            planPrefix.length >= 50 &&
+            normEmitted.includes(planPrefix.slice(0, 50));
+          const dayHeadingsInChat = /\bday\s*\d+\b/i.test(
+            fullEmittedAssistantText
+          );
+          const itineraryAlreadyVisible =
+            planText.length > 0 && (dayHeadingsInChat || prefixSeenInChat);
+
           const needsPlanFallback =
             (touchedItineraryThisTurn || touchedModifyThisTurn) &&
-            emittedAssistantTextChars < 400 &&
-            planText.length > 0;
+            planText.length > 0 &&
+            !itineraryAlreadyVisible;
 
           if (needsPlanFallback) {
             const tid = generateId();
