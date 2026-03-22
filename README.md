@@ -31,7 +31,7 @@ Stack in short: **Cloudflare Worker + Durable Object**, **Workers AI**, **Vite +
 
 ### What happens on each message (under the hood)
 
-<img width="592" height="93" alt="image" src="https://github.com/user-attachments/assets/5bf67d0d-4010-42d7-a24c-8901a86a95c0" />
+<img width="1608" height="264" alt="architecture_diagram" src="https://github.com/user-attachments/assets/f36b56c9-2c91-4d36-bd46-783652085ebe" />
 
 
 
