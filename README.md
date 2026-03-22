@@ -33,8 +33,6 @@ Stack in short: **Cloudflare Worker + Durable Object**, **Workers AI**, **Vite +
 
 <img width="1608" height="264" alt="architecture_diagram" src="https://github.com/user-attachments/assets/f36b56c9-2c91-4d36-bd46-783652085ebe" />
 
-
-
 In plain words: your message hits the Worker, the **Durable Object** holds the conversation and tools, the **model** decides which tools to run, and the **stream** brings text and tool results back to the React UI. If admin logging is enabled, completed turns can be summarized into KV for the `/admin` API.
 
 ---
@@ -43,11 +41,11 @@ In plain words: your message hits the Worker, the **Durable Object** holds the c
 
 Behavior lives mainly in `src/server.ts` (`systemPrompt` and tool descriptions). Typical patterns:
 
-| Situation | Tools (rough order) | What “good” looks like |
-| --- | --- | --- |
-| **New trip** | `searchDestination` → `getWeatherForecast` → `estimateBudget` when it helps | A **full** day-by-day plan appears as normal assistant text, then **`createItinerary` once** with the **same** itinerary text. |
-| **Edits** | `getActiveItinerary` | Updated plan in chat, then **`modifyItinerary`** with the full new text plus a **reason**. |
-| **Preferences** | `rememberPreference` | Stable, human-readable preference lines (filtered before they become UI chips). |
+| Situation       | Tools (rough order)                                                         | What “good” looks like                                                                                                         |
+| --------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **New trip**    | `searchDestination` → `getWeatherForecast` → `estimateBudget` when it helps | A **full** day-by-day plan appears as normal assistant text, then **`createItinerary` once** with the **same** itinerary text. |
+| **Edits**       | `getActiveItinerary`                                                        | Updated plan in chat, then **`modifyItinerary`** with the full new text plus a **reason**.                                     |
+| **Preferences** | `rememberPreference`                                                        | Stable, human-readable preference lines (filtered before they become UI chips).                                                |
 
 Hard expectations mirrored from the prompt: no fake tool JSON pasted as chat text; **do not** call `createItinerary` in a loop for one user request; city + duration is often enough to start.
 
@@ -63,7 +61,6 @@ npm run dev
 Open [http://localhost:5173](http://localhost:5173).
 
 Workers AI is configured with **`ai.remote: true`** in `wrangler.jsonc`. That usually plays nicely with local dev, but if Wrangler complains about your account or subdomain, check the [Workers AI remote docs](https://developers.cloudflare.com/workers-ai/configuration/remote/) and your `wrangler` login.
-
 
 ---
 
@@ -84,27 +81,27 @@ Live demo: [trip-planner.rkdgus5468.workers.dev](https://trip-planner.rkdgus5468
 
 ## Project layout
 
-| Path | Role |
-| --- | --- |
-| `src/server.ts` | Worker fetch, `ChatAgent` Durable Object, system prompt, tools, optional admin HTML + KV logging |
-| `src/app.tsx` | Chat UI, itinerary / saved trips, tool approval, session id, Streamdown + remark-breaks |
-| `src/client.tsx` | React entry |
-| `src/messageText.ts` | Newline normalization and itinerary title/body formatting for the assistant stream |
-| `src/travelStyleFilter.ts` | Filters junk / tier-only “styles” before preferences hit memory UI |
-| `src/adminLog.ts` / `src/adminApi.ts` | KV keys, session meta, admin JSON API |
-| `public/admin.html` | Minimal admin UI (also imported as raw HTML in the Worker for `/admin`) |
-| `wrangler.jsonc` | Bindings: AI, Durable Object, KV, `run_worker_first` routes for API and admin |
+| Path                                  | Role                                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `src/server.ts`                       | Worker fetch, `ChatAgent` Durable Object, system prompt, tools, optional admin HTML + KV logging |
+| `src/app.tsx`                         | Chat UI, itinerary / saved trips, tool approval, session id, Streamdown + remark-breaks          |
+| `src/client.tsx`                      | React entry                                                                                      |
+| `src/messageText.ts`                  | Newline normalization and itinerary title/body formatting for the assistant stream               |
+| `src/travelStyleFilter.ts`            | Filters junk / tier-only “styles” before preferences hit memory UI                               |
+| `src/adminLog.ts` / `src/adminApi.ts` | KV keys, session meta, admin JSON API                                                            |
+| `public/admin.html`                   | Minimal admin UI (also imported as raw HTML in the Worker for `/admin`)                          |
+| `wrangler.jsonc`                      | Bindings: AI, Durable Object, KV, `run_worker_first` routes for API and admin                    |
 
 ---
 
 ## Scripts
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Vite dev server |
-| `npm run deploy` | Production build + Worker deploy |
-| `npm run check` | Format check, oxlint, TypeScript |
-| `npm run types` | Regenerate `env.d.ts` from Wrangler |
+| Command          | Purpose                             |
+| ---------------- | ----------------------------------- |
+| `npm run dev`    | Vite dev server                     |
+| `npm run deploy` | Production build + Worker deploy    |
+| `npm run check`  | Format check, oxlint, TypeScript    |
+| `npm run types`  | Regenerate `env.d.ts` from Wrangler |
 
 ---
 
