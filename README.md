@@ -31,7 +31,7 @@ Stack in short: **Cloudflare Worker + Durable Object**, **Workers AI**, **Vite +
 
 ### What happens on each message (under the hood)
 
-```
+``` mermaid
 flowchart LR
   UI[React Chat UI] -->|HTTP| W[Worker]
   W --> DO[ChatAgent DO]
