@@ -1,6 +1,15 @@
+/** Turns literal `\\u00a3` / `\\u20ac` style sequences into real characters (models sometimes emit JSON-style escapes in prose). */
+export function decodeUnicodeEscapes(text: string): string {
+  if (!text) return text;
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+}
+
 export function normalizeMessageNewlines(text: string): string {
   if (!text) return text;
-  return text
+  let s = decodeUnicodeEscapes(text);
+  return s
     .replace(/\\r\\n/g, "\n")
     .replace(/\\n/g, "\n")
     .replace(/\r\n/g, "\n")

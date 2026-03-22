@@ -1058,7 +1058,7 @@ function Chat() {
                             />
                           </summary>
                           <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
-                            {reasoning.text}
+                            {normalizeMessageNewlines(reasoning.text)}
                           </pre>
                         </details>
                       </div>
