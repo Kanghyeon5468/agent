@@ -7,6 +7,10 @@ Coordination: Cloudflare Worker plus Durable Object
 Input: Chat UI
 Memory: Active itinerary, saved trips, user preferences
 
+## Instruction
+Start your conversation with "Plan" 
+Example : "Plan 7 days in Tokyo, my budget is £500, and i like relaxation"
+
 ## What the agent is told to do
 
 Behavior is defined in `src/server.ts` (`systemPrompt` in `onChatMessage`). In short:
@@ -63,9 +67,7 @@ live demo URL[https://trip-planner.rkdgus5468.workers.dev]
 
 Stack: Cloudflare Workers, Durable Objects, `@cloudflare/ai-chat`, AI SDK (`ai`), React 19, Kumo, Tailwind CSS 4.
 
-## Instruction
-Start your conversation with "Plan" 
-Example : "Plan 7 days in Tokyo, my budget is £500, and i like relaxation"
+
 ## License
 
 MIT
