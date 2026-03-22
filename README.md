@@ -63,6 +63,9 @@ live demo URL[https://trip-planner.rkdgus5468.workers.dev]
 
 Stack: Cloudflare Workers, Durable Objects, `@cloudflare/ai-chat`, AI SDK (`ai`), React 19, Kumo, Tailwind CSS 4.
 
+## Instruction
+Start your conversation with "Plan" 
+Example : "Plan 7 days in Tokyo, my budget is £500, and i like relaxation"
 ## License
 
 MIT
