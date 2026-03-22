@@ -37,6 +37,7 @@ import {
   ClockCounterClockwiseIcon,
   BookmarkSimpleIcon
 } from "@phosphor-icons/react";
+import { filterTravelStyleList } from "./travelStyleFilter";
 
 // ── Types (mirrors server)
 
@@ -71,6 +72,18 @@ interface UserMemory {
   dietaryRestrictions: string[];
   pastDestinations: string[];
   notes: string[];
+}
+
+function emptyUserMemory(): UserMemory {
+  return {
+    preferredStyles: [],
+    budgetLevel: "",
+    likedPlaceTypes: [],
+    dislikedPlaceTypes: [],
+    dietaryRestrictions: [],
+    pastDestinations: [],
+    notes: []
+  };
 }
 
 // ── Small components
@@ -377,7 +390,7 @@ function ToolPartView({
 function memoryCount(mem: UserMemory | null): number {
   if (!mem) return 0;
   return (
-    mem.preferredStyles.length +
+    filterTravelStyleList(mem.preferredStyles).length +
     (mem.budgetLevel ? 1 : 0) +
     mem.likedPlaceTypes.length +
     mem.dislikedPlaceTypes.length +
@@ -386,9 +399,26 @@ function memoryCount(mem: UserMemory | null): number {
   );
 }
 
+/** One Durable Object `ChatAgent` per id — keeps chat / memory / trips private per browser. */
+const AGENT_SESSION_STORAGE_KEY = "trip-planner-agent-session";
+
+function getOrCreateAgentSessionId(): string {
+  try {
+    let id = localStorage.getItem(AGENT_SESSION_STORAGE_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(AGENT_SESSION_STORAGE_KEY, id);
+    }
+    return id;
+  } catch {
+    return `session-${Math.random().toString(36).slice(2, 14)}`;
+  }
+}
+
 // ── Main chat ─────────────────────────────────────────────────────────
 
 function Chat() {
+  const [agentSessionId] = useState(() => getOrCreateAgentSessionId());
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
@@ -417,6 +447,7 @@ function Chat() {
 
   const agent = useAgent({
     agent: "ChatAgent",
+    name: agentSessionId,
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
     onError: useCallback(
@@ -564,6 +595,9 @@ function Chat() {
   }, [input, isStreaming, sendMessage]);
 
   const mCount = memoryCount(memory);
+  const travelStyleChips = memory
+    ? filterTravelStyleList(memory.preferredStyles)
+    : [];
 
   const resetUserMemory = useCallback(async () => {
     if (
@@ -575,6 +609,7 @@ function Chat() {
     }
     try {
       await agent.call("resetMemoryForClient", []);
+      setMemory(emptyUserMemory());
       await refreshMemory();
     } catch (e) {
       console.error("resetMemoryForClient:", e);
@@ -894,10 +929,10 @@ function Chat() {
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {memory.preferredStyles.length > 0 && (
+                        {travelStyleChips.length > 0 && (
                           <MemoryRow
                             label="Travel Style"
-                            values={memory.preferredStyles}
+                            values={travelStyleChips}
                           />
                         )}
                         {memory.budgetLevel && (

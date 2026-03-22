@@ -13,6 +13,10 @@ import {
   generateId
 } from "ai";
 import { z } from "zod";
+import {
+  filterTravelStyleList,
+  sanitizeTravelStyle
+} from "./travelStyleFilter";
 
 /**
  * Llama 3.3 fp8-fast often emits fake tool JSON as plain assistant text instead of
@@ -78,21 +82,23 @@ interface DestinationInfo {
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const DEFAULT_MEMORY: UserMemory = {
-  preferredStyles: [],
-  budgetLevel: "",
-  likedPlaceTypes: [],
-  dislikedPlaceTypes: [],
-  dietaryRestrictions: [],
-  pastDestinations: [],
-  notes: []
-};
+function cloneDefaultMemory(): UserMemory {
+  return {
+    preferredStyles: [],
+    budgetLevel: "",
+    likedPlaceTypes: [],
+    dislikedPlaceTypes: [],
+    dietaryRestrictions: [],
+    pastDestinations: [],
+    notes: []
+  };
+}
 
 function defaultState(): TripPlannerState {
   return {
     activeItinerary: null,
     savedTrips: [],
-    memory: { ...DEFAULT_MEMORY }
+    memory: cloneDefaultMemory()
   };
 }
 
@@ -654,8 +660,8 @@ function summarizeItinerary(it: ActiveItinerary): string {
 
 function summarizeMemory(mem: UserMemory): string {
   const parts: string[] = [];
-  if (mem.preferredStyles.length)
-    parts.push(`Styles: ${mem.preferredStyles.join(", ")}`);
+  const styles = filterTravelStyleList(mem.preferredStyles);
+  if (styles.length) parts.push(`Styles: ${styles.join(", ")}`);
   if (mem.budgetLevel) parts.push(`Budget: ${mem.budgetLevel}`);
   if (mem.likedPlaceTypes.length)
     parts.push(`Likes: ${mem.likedPlaceTypes.join(", ")}`);
@@ -718,7 +724,7 @@ type TripToolEntry = {
 /**
  * Show only the last call per tool name in one assistant turn.
  * The model sometimes re-invokes the same read-only tools on every step (up to
- * `stopWhen: stepCountIs(5)`), which would otherwise render N identical cards —
+ * `stopWhen: stepCountIs(6)`), which would otherwise render N identical cards —
  * often only in remote Workers AI vs local dev.
  */
 const DEDUPE_UI_LAST_ONLY_TOOL_NAMES = new Set([
@@ -848,6 +854,17 @@ export class ChatAgent extends AIChatAgent<Env> {
     return this.appState.savedTrips;
   }
 
+  @callable()
+  async resetMemoryForClient() {
+    const current = this.appState;
+    this.setState({
+      ...current,
+      memory: cloneDefaultMemory()
+    });
+    this.broadcast(JSON.stringify({ type: "memory-updated" }));
+    return { ok: true as const };
+  }
+
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const workersai = createWorkersAI({ binding: this.env.AI });
     const state = this.appState;
@@ -856,9 +873,9 @@ export class ChatAgent extends AIChatAgent<Env> {
     const systemPrompt = `You are Trip Planner: an adaptive travel assistant with memory. Always respond in English (itineraries, explanations, and tips), even if the user writes in another language.
 
 TOOLS (the platform runs these for you — do NOT paste JSON like {"type":"function"...} in your message):
-1) Plan: searchDestination → getWeatherForecast → estimateBudget (if useful) → write a clear day-by-day plan in your reply → createItinerary (same text as itinerary).
+1) Plan: searchDestination → getWeatherForecast → write a clear day-by-day plan in your reply (this is mandatory) → createItinerary (same text as itinerary). Call estimateBudget only if the user asked for costs/budget or you are adding a short optional cost note after the written plan — never let estimateBudget be the only substantive output.
 2) Adapt: getActiveItinerary → rewrite plan in reply → modifyItinerary (full updated text + reason).
-3) Memory: rememberPreference when you learn likes, style, diet, etc.
+3) Memory: rememberPreference when you learn likes, style, diet, etc. For type "style", save only a short real label (e.g. cultural, foodie, relaxation) — never placeholders or instructions like "not specified" or "please provide".
 
 Itinerary text: use headings (Day 1, Day 2…), times, places, tips. Tag activities [indoor] or [outdoor] when relevant.
 
@@ -873,7 +890,7 @@ ${getSchedulePrompt({ date: new Date() })}
 RULES:
 - Never output tool-call JSON as plain text; only use real tool calls.
 - Call createItinerary at most once per user request (after research tools). Do not repeat it in later steps.
-- ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat.
+- ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat. Ending the turn with only tool cards (especially only estimateBudget) is incorrect.
 - If the user gives city + duration, that is enough to plan (infer reasonable dates or ask one short question in English).
 - Be specific: real venues, realistic timing.
 - Keep every user-facing string in English.`;
@@ -924,7 +941,8 @@ RULES:
       }),
 
       estimateBudget: tool({
-        description: "Calculate estimated trip budget breakdown",
+        description:
+          "Optional trip cost breakdown. Call only if the user explicitly asked for budget/costs, or after you already wrote the full day-by-day itinerary in your assistant message (brief supplement). Do not use for generic trip requests where the user wants an itinerary.",
         inputSchema: z.object({
           destination: z.string().describe("City name"),
           days: z.coerce.number().describe("Trip duration in days"),
@@ -986,7 +1004,7 @@ RULES:
           style: z
             .string()
             .describe(
-              "Travel style: adventure, relaxation, cultural, foodie, nightlife, family, romantic"
+              "One short travel style label only: adventure, relaxation, cultural, foodie, nightlife, family, romantic (not budget tiers, not placeholders)"
             ),
           dayCount: z.coerce.number().describe("Number of days"),
           itinerary: z
@@ -1004,12 +1022,13 @@ RULES:
           itinerary
         }) => {
           const current = this.appState;
+          const styleStored = sanitizeTravelStyle(style) ?? "general";
           const active: ActiveItinerary = {
             id: crypto.randomUUID(),
             destination,
             startDate,
             endDate,
-            style,
+            style: styleStored,
             dayCount,
             itinerary,
             modifications: [],
@@ -1020,8 +1039,14 @@ RULES:
           if (!memory.pastDestinations.includes(destination)) {
             memory.pastDestinations = [...memory.pastDestinations, destination];
           }
-          if (style && !memory.preferredStyles.includes(style)) {
-            memory.preferredStyles = [...memory.preferredStyles, style];
+          const styleForPrefs = sanitizeTravelStyle(style);
+          if (
+            styleForPrefs &&
+            !memory.preferredStyles.some(
+              (s) => s.toLowerCase() === styleForPrefs.toLowerCase()
+            )
+          ) {
+            memory.preferredStyles = [...memory.preferredStyles, styleForPrefs];
           }
 
           this.setState({
@@ -1106,7 +1131,11 @@ RULES:
               "note"
             ])
             .describe("Category of preference"),
-          value: z.string().describe("The preference value to remember")
+          value: z
+            .string()
+            .describe(
+              "Short factual value; for style, a single label like cultural or foodie (never instructions or unknown)"
+            )
         }),
         execute: async ({ type, value }) => {
           const current = this.appState;
@@ -1114,10 +1143,23 @@ RULES:
           const v = value.trim();
 
           switch (type) {
-            case "style":
-              if (!memory.preferredStyles.includes(v))
-                memory.preferredStyles = [...memory.preferredStyles, v];
+            case "style": {
+              const s = sanitizeTravelStyle(v);
+              if (!s) {
+                return {
+                  success: true,
+                  remembered: "style skipped (not a usable label)"
+                };
+              }
+              if (
+                !memory.preferredStyles.some(
+                  (x) => x.toLowerCase() === s.toLowerCase()
+                )
+              ) {
+                memory.preferredStyles = [...memory.preferredStyles, s];
+              }
               break;
+            }
             case "budget":
               memory.budgetLevel = v;
               break;
@@ -1291,13 +1333,13 @@ RULES:
         try {
           const result = await generateText({
             model: workersai(WORKERS_AI_CHAT_MODEL),
-            maxOutputTokens: 512,
+            maxOutputTokens: 1024,
             temperature: 0.6,
             toolChoice: "auto",
             system: systemPrompt,
             messages: prunedModelMessages,
             tools: tripTools,
-            stopWhen: stepCountIs(5),
+            stopWhen: stepCountIs(6),
             abortSignal: options?.abortSignal
           });
 
