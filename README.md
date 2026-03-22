@@ -31,7 +31,7 @@ Stack in short: **Cloudflare Worker + Durable Object**, **Workers AI**, **Vite +
 
 ### What happens on each message (under the hood)
 
-'''
+```
 flowchart LR
   UI[React Chat UI] -->|HTTP| W[Worker]
   W --> DO[ChatAgent DO]
@@ -41,7 +41,7 @@ flowchart LR
   W --> UI
 
   DO -.->|log| KV[(KV Storage)]
-  '''
+```
 
 In plain words: your message hits the Worker, the **Durable Object** holds the conversation and tools, the **model** decides which tools to run, and the **stream** brings text and tool results back to the React UI. If admin logging is enabled, completed turns can be summarized into KV for the `/admin` API.
 
