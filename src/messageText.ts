@@ -1,6 +1,3 @@
-/**
- * LLM output sometimes includes literal `\` + `n` instead of newline characters.
- */
 export function normalizeMessageNewlines(text: string): string {
   if (!text) return text;
   return text
@@ -10,17 +7,12 @@ export function normalizeMessageNewlines(text: string): string {
     .replace(/\r/g, "\n");
 }
 
-/** Strip a single outer `**...**` wrapper (model sometimes bolds the whole reply). */
 export function demoteAccidentalFullBold(text: string): string {
   const t = text.trim();
   if (t.length < 4 || !t.startsWith("**") || !t.endsWith("**")) return text;
   return t.slice(2, -2).trim();
 }
 
-/**
- * Insert breaks before Day N when glued to the previous word/sentence
- * ("planDay 1", "...nightlife.Day 2", etc.).
- */
 export function formatAssistantItineraryText(raw: string): string {
   let s = normalizeMessageNewlines(raw).trim();
   if (!s) return s;

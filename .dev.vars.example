@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored) for local admin + logging.
+# wrangler dev loads .dev.vars automatically.
+
+ADMIN_ENABLED=true
+# Long random string; use the same value in the admin page form.
+ADMIN_API_SECRET=replace-with-a-long-random-secret

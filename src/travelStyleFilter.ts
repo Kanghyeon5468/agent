@@ -1,8 +1,3 @@
-/**
- * Filters junk the model sometimes saves as "travel style" (placeholders,
- * instructions, budget tiers that belong in budgetLevel, etc.).
- */
-
 const JUNK_EXACT = new Set([
   "not specified",
   "unspecified",
@@ -27,7 +22,6 @@ const JUNK_EXACT = new Set([
   "?"
 ]);
 
-/** Spending tiers from estimateBudget — not travel style labels */
 const BUDGET_TIER_LABELS = new Set(["budget", "moderate", "luxury"]);
 
 const JUNK_SUBSTRINGS = [
@@ -65,7 +59,6 @@ export function isValidTravelStyleValue(raw: string): boolean {
   return true;
 }
 
-/** Returns trimmed label to store, or null if it should be ignored */
 export function sanitizeTravelStyle(raw: string): string | null {
   const s = normalizeForCheck(raw);
   if (!isValidTravelStyleValue(s)) return null;

@@ -17,15 +17,12 @@ import {
   filterTravelStyleList,
   sanitizeTravelStyle
 } from "./travelStyleFilter";
+import { persistChatSessionToKv } from "./adminLog";
+import { handleAdminApi, isAdminPanelEnabled } from "./adminApi";
+import type { UIMessage } from "ai";
+import adminPanelHtml from "../public/admin.html?raw";
 
-/**
- * Llama 3.3 fp8-fast often emits fake tool JSON as plain assistant text instead of
- * native `tool_calls`, so the AI SDK never executes tools. Llama 3.1 70B follows
- * Workers AI tool calling more reliably for this stack.
- */
 const WORKERS_AI_CHAT_MODEL = "@cf/meta/llama-3.1-70b-instruct";
-
-// Types
 
 interface ActiveItinerary {
   id: string;
@@ -80,8 +77,6 @@ interface DestinationInfo {
   rain: string[];
 }
 
-// ── Constants ────────────────────────────────────────────────────────────
-
 function cloneDefaultMemory(): UserMemory {
   return {
     preferredStyles: [],
@@ -117,7 +112,6 @@ const MONTHS = [
   "december"
 ];
 
-// Curated destination database — replace with real APIs in production
 const DESTINATIONS: Record<string, DestinationInfo> = {
   tokyo: {
     country: "Japan",
@@ -599,8 +593,6 @@ const DESTINATIONS: Record<string, DestinationInfo> = {
   }
 };
 
-// Helpers
-
 function getWeather(destination: string, month: string) {
   const key = destination.toLowerCase().trim();
   const mi = MONTHS.indexOf(month.toLowerCase());
@@ -675,7 +667,6 @@ function summarizeMemory(mem: UserMemory): string {
   return parts.length > 0 ? parts.join("\n") : "No memories yet.";
 }
 
-/** Some Workers AI models print `{"type":"function",...}` as plain text instead of native tool_calls. */
 function parseEmbeddedFunctionCall(text: string): {
   name: string;
   args: Record<string, unknown>;
@@ -721,12 +712,6 @@ type TripToolEntry = {
   execute?: (input: unknown) => Promise<unknown>;
 };
 
-/**
- * Show only the last call per tool name in one assistant turn.
- * The model sometimes re-invokes the same read-only tools on every step (up to
- * `stopWhen: stepCountIs(6)`), which would otherwise render N identical cards —
- * often only in remote Workers AI vs local dev.
- */
 const DEDUPE_UI_LAST_ONLY_TOOL_NAMES = new Set([
   "searchDestination",
   "getWeatherForecast",
@@ -756,9 +741,7 @@ function toolCallIdsToSkipForDuplicateStateTools(
   return skip;
 }
 
-/** Run a tool that the model printed as JSON text and emit matching UI stream chunks. */
 async function emitRecoveredToolCall(
-  // UIMessageStreamWriter.write expects typed chunks; we emit the same shapes as streamText.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   writer: { write: (chunk: any) => void },
   embedded: { name: string; args: Record<string, unknown> },
@@ -790,7 +773,7 @@ async function emitRecoveredToolCall(
   writer.write({
     type: "text-delta",
     id: explainId,
-    delta: "Running saved tools (recovered from model output)…\n\n"
+    delta: "Running recovered tool calls.\n\n"
   });
   writer.write({ type: "text-end", id: explainId });
 
@@ -820,8 +803,6 @@ async function emitRecoveredToolCall(
   }
 }
 
-// Agent
-
 export class ChatAgent extends AIChatAgent<Env> {
   initialState: TripPlannerState = defaultState();
 
@@ -838,7 +819,6 @@ export class ChatAgent extends AIChatAgent<Env> {
     }
   }
 
-  // Callable methods for the client UI
   @callable()
   async getActiveItineraryForClient() {
     return this.appState.activeItinerary;
@@ -877,7 +857,7 @@ TOOLS (the platform runs these for you — do NOT paste JSON like {"type":"funct
 2) Adapt: getActiveItinerary → rewrite plan in reply → modifyItinerary (full updated text + reason).
 3) Memory: rememberPreference when you learn likes, style, diet, etc. For type "style", save only a short real label (e.g. cultural, foodie, relaxation) — never placeholders or instructions like "not specified" or "please provide".
 
-Itinerary text: use headings (Day 1, Day 2…), times, places, tips. Tag activities [indoor] or [outdoor] when relevant.
+Itinerary text: use headings (Day 1, Day 2, ...), times, places, tips. Tag activities [indoor] or [outdoor] when relevant.
 
 USER MEMORY:
 ${summarizeMemory(state.memory)}
@@ -903,8 +883,6 @@ RULES:
     });
 
     const tripTools = {
-      // Feature 1: Itinerary Generation
-
       searchDestination: tool({
         description:
           "Look up travel info about a destination: attractions, food, costs, tips",
@@ -1066,8 +1044,6 @@ RULES:
         }
       }),
 
-      //Feature 2: Adaptive Modification
-
       getActiveItinerary: tool({
         description:
           "Read the current active itinerary. Use this before modifying so you know what to change.",
@@ -1116,8 +1092,6 @@ RULES:
           };
         }
       }),
-
-      // ── Feature 3: User Memory ──
 
       rememberPreference: tool({
         description:
@@ -1194,8 +1168,6 @@ RULES:
         execute: async () => this.appState.memory
       }),
 
-      // ── Trip management ──
-
       saveTrip: tool({
         description:
           "Archive the active itinerary to saved trips (keeps it even after starting a new trip)",
@@ -1270,8 +1242,6 @@ RULES:
         }
       }),
 
-      // Utility tools
-
       getUserTimezone: tool({
         description:
           "Get the user's timezone from their browser for scheduling accuracy",
@@ -1329,6 +1299,21 @@ RULES:
 
     const stream = createUIMessageStream({
       originalMessages: this.messages,
+      onFinish: async ({ messages }) => {
+        try {
+          const kv = this.env.CHAT_ADMIN_LOG;
+          const secret = this.env.ADMIN_API_SECRET?.trim();
+          if (kv && secret && isAdminPanelEnabled(this.env)) {
+            await persistChatSessionToKv(
+              kv,
+              this.name,
+              messages as UIMessage[]
+            );
+          }
+        } catch (err) {
+          console.error("persistChatSessionToKv failed", err);
+        }
+      },
       execute: async ({ writer }) => {
         writer.write({ type: "start" });
 
@@ -1501,6 +1486,27 @@ RULES:
 
 export default {
   async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    const isAdminPath =
+      url.pathname === "/admin" ||
+      url.pathname === "/admin/" ||
+      url.pathname === "/admin.html";
+    if (isAdminPath) {
+      if (!isAdminPanelEnabled(env)) {
+        return new Response("Not found", { status: 404 });
+      }
+      return new Response(adminPanelHtml, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store"
+        }
+      });
+    }
+    if (url.pathname.startsWith("/api/admin")) {
+      const adminRes = await handleAdminApi(request, env);
+      if (adminRes) return adminRes;
+      return new Response("Not found", { status: 404 });
+    }
     return (
       (await routeAgentRequest(request, env)) ||
       new Response("Not found", { status: 404 })

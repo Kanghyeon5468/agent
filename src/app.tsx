@@ -45,8 +45,6 @@ import {
   splitAssistantTitleBody
 } from "./messageText";
 
-// ── Types (mirrors server)
-
 interface ActiveItinerary {
   id: string;
   destination: string;
@@ -92,8 +90,6 @@ function emptyUserMemory(): UserMemory {
   };
 }
 
-// ── Small components
-
 function ThemeToggle() {
   const [dark, setDark] = useState(
     () => document.documentElement.getAttribute("data-mode") === "dark"
@@ -119,8 +115,6 @@ function ThemeToggle() {
   );
 }
 
-// ── Tool display helpers
-
 function formatToolLabel(name: string): string {
   const map: Record<string, string> = {
     searchDestination: "Destination Search",
@@ -144,18 +138,17 @@ function formatToolLabel(name: string): string {
   return map[name] ?? name;
 }
 
-// Produce a human-readable summary from tool input/output
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function describeToolInput(name: string, input: any): string | null {
   if (!input) return null;
   try {
     switch (name) {
       case "searchDestination":
-        return `Searching for ${input.destination}…`;
+        return `Searching for ${input.destination}...`;
       case "getWeatherForecast":
-        return `Checking ${input.month} weather in ${input.destination}…`;
+        return `Checking ${input.month} weather in ${input.destination}...`;
       case "estimateBudget":
-        return `Estimating ${input.days}-day ${input.budgetLevel} budget for ${input.destination}…`;
+        return `Estimating ${input.days}-day ${input.budgetLevel} budget for ${input.destination}...`;
       case "createItinerary":
         return `Saving ${input.dayCount ?? "?"}-day ${input.style} itinerary for ${input.destination} (${input.startDate} → ${input.endDate})`;
       case "modifyItinerary":
@@ -249,8 +242,6 @@ function describeToolOutput(name: string, output: any): string | null {
   }
 }
 
-// ── Tool rendering ────────────────────────────────────────────────────
-
 function ToolPartView({
   part,
   addToolApprovalResponse,
@@ -267,7 +258,6 @@ function ToolPartView({
   const toolName = getToolName(part);
   const label = formatToolLabel(toolName);
 
-  // Completed
   if (part.state === "output-available") {
     const readable = describeToolOutput(toolName, part.output);
     return (
@@ -299,7 +289,6 @@ function ToolPartView({
     );
   }
 
-  // Needs approval
   if ("approval" in part && part.state === "approval-requested") {
     const approvalId = (part.approval as { id?: string })?.id;
     const readable = describeToolInput(toolName, part.input);
@@ -308,7 +297,7 @@ function ToolPartView({
         <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
           <div className="flex items-center gap-2 mb-2">
             <Text size="sm" bold>
-              Approval needed — {label}
+              Approval needed: {label}
             </Text>
           </div>
           {readable && (
@@ -350,7 +339,6 @@ function ToolPartView({
     );
   }
 
-  // Rejected
   if (
     part.state === "output-denied" ||
     ("approval" in part &&
@@ -371,7 +359,6 @@ function ToolPartView({
     );
   }
 
-  // Executing
   if (part.state === "input-available" || part.state === "input-streaming") {
     const readable = describeToolInput(toolName, part.input);
     return (
@@ -391,8 +378,6 @@ function ToolPartView({
   return null;
 }
 
-// ── Helper: count total memory entries ────────────────────────────────
-
 function memoryCount(mem: UserMemory | null): number {
   if (!mem) return 0;
   return (
@@ -405,7 +390,6 @@ function memoryCount(mem: UserMemory | null): number {
   );
 }
 
-/** One Durable Object `ChatAgent` per id — keeps chat / memory / trips private per browser. */
 const AGENT_SESSION_STORAGE_KEY = "trip-planner-agent-session";
 
 function getOrCreateAgentSessionId(): string {
@@ -421,8 +405,6 @@ function getOrCreateAgentSessionId(): string {
   }
 }
 
-// ── Main chat ─────────────────────────────────────────────────────────
-
 function Chat() {
   const [agentSessionId] = useState(() => getOrCreateAgentSessionId());
   const [connected, setConnected] = useState(false);
@@ -432,7 +414,6 @@ function Chat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toasts = useKumoToastManager();
 
-  // Active trip panel
   const [showTripPanel, setShowTripPanel] = useState(false);
   const [activeItinerary, setActiveItinerary] =
     useState<ActiveItinerary | null>(null);
@@ -441,12 +422,10 @@ function Chat() {
   const [showItineraryText, setShowItineraryText] = useState(false);
   const tripPanelRef = useRef<HTMLDivElement>(null);
 
-  // Memory panel
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const [memory, setMemory] = useState<UserMemory | null>(null);
   const memoryPanelRef = useRef<HTMLDivElement>(null);
 
-  // Refs for broadcast handlers (avoids circular deps with agent)
   const refreshItineraryRef = useRef<() => void>(() => {});
   const refreshMemoryRef = useRef<() => void>(() => {});
   const refreshTripsRef = useRef<() => void>(() => {});
@@ -480,48 +459,37 @@ function Chat() {
           if (data.type === "trips-updated") {
             refreshTripsRef.current();
           }
-        } catch {
-          // Not JSON or not our event
-        }
+        } catch {}
       },
       [toasts]
     )
   });
 
-  // Data fetch functions
   const refreshItinerary = useCallback(async () => {
     try {
       const result = await agent.call("getActiveItineraryForClient", []);
       setActiveItinerary(result as ActiveItinerary | null);
-    } catch {
-      /* agent not ready */
-    }
+    } catch {}
   }, [agent]);
 
   const refreshMemory = useCallback(async () => {
     try {
       const result = await agent.call("getMemoryForClient", []);
       setMemory(result as UserMemory);
-    } catch {
-      /* agent not ready */
-    }
+    } catch {}
   }, [agent]);
 
   const refreshTrips = useCallback(async () => {
     try {
       const result = await agent.call("getSavedTrips", []);
       setSavedTrips(result as SavedTrip[]);
-    } catch {
-      /* agent not ready */
-    }
+    } catch {}
   }, [agent]);
 
-  // Keep refs in sync
   refreshItineraryRef.current = refreshItinerary;
   refreshMemoryRef.current = refreshMemory;
   refreshTripsRef.current = refreshTrips;
 
-  // Fetch all data on connection
   useEffect(() => {
     if (connected) {
       refreshItinerary();
@@ -530,7 +498,6 @@ function Chat() {
     }
   }, [connected, refreshItinerary, refreshMemory, refreshTrips]);
 
-  // Close panels on outside click
   useEffect(() => {
     if (!showTripPanel && !showMemoryPanel) return;
     function handleClickOutside(e: MouseEvent) {
@@ -624,7 +591,6 @@ function Chat() {
 
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
-      {/* Header */}
       <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -665,7 +631,6 @@ function Chat() {
             </div>
             <ThemeToggle />
 
-            {/* Active Trip panel */}
             <div className="relative" ref={tripPanelRef}>
               <Button
                 variant="secondary"
@@ -694,7 +659,6 @@ function Chat() {
               {showTripPanel && (
                 <div className="absolute right-0 top-full mt-2 w-[440px] z-50">
                   <Surface className="rounded-xl ring ring-kumo-line shadow-lg p-4 space-y-3 max-h-[70vh] overflow-y-auto">
-                    {/* Panel header */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <MapPinIcon size={16} className="text-kumo-accent" />
@@ -725,7 +689,6 @@ function Chat() {
                       </div>
                     </div>
 
-                    {/* Active itinerary */}
                     {!activeItinerary ? (
                       <div className="py-4 text-center">
                         <AirplaneTiltIcon
@@ -744,7 +707,6 @@ function Chat() {
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {/* Trip summary */}
                         <div className="p-3 rounded-lg bg-kumo-elevated border border-kumo-line">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="text-sm font-semibold text-kumo-default">
@@ -819,7 +781,6 @@ function Chat() {
                       </div>
                     )}
 
-                    {/* Saved trips section */}
                     {savedTrips.length > 0 && (
                       <div className="pt-3 border-t border-kumo-line space-y-2">
                         <div className="flex items-center gap-2">
@@ -877,7 +838,6 @@ function Chat() {
               )}
             </div>
 
-            {/* Memory panel */}
             <div className="relative" ref={memoryPanelRef}>
               <Button
                 variant="secondary"
@@ -1001,7 +961,6 @@ function Chat() {
         </div>
       </header>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
           {messages.length === 0 && (
@@ -1160,7 +1119,6 @@ function Chat() {
         </div>
       </div>
 
-      {/* Input */}
       <div className="border-t border-kumo-line bg-kumo-base">
         <form
           onSubmit={(e) => {
@@ -1217,8 +1175,6 @@ function Chat() {
     </div>
   );
 }
-
-// ── Memory row component ──────────────────────────────────────────────
 
 function MemoryRow({ label, values }: { label: string; values: string[] }) {
   return (

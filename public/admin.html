@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trip planner — Admin</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+        line-height: 1.45;
+        color: #111;
+        background: #f4f4f5;
+      }
+      body {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 1.25rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin-bottom: 0.35rem;
+        color: #444;
+      }
+      input[type="password"],
+      input[type="text"] {
+        width: min(100%, 28rem);
+        padding: 0.5rem 0.6rem;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        font-size: 0.95rem;
+      }
+      button {
+        margin-top: 0.5rem;
+        padding: 0.45rem 0.9rem;
+        border-radius: 6px;
+        border: 1px solid #333;
+        background: #111;
+        color: #fff;
+        cursor: pointer;
+        font-size: 0.9rem;
+      }
+      button.secondary {
+        background: #fff;
+        color: #111;
+      }
+      .row {
+        margin-bottom: 1rem;
+      }
+      .sessions {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .sessions li {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 0.65rem 0.85rem;
+        margin-bottom: 0.5rem;
+        background: #fff;
+        cursor: pointer;
+      }
+      .sessions li:hover {
+        border-color: #999;
+      }
+      .meta {
+        font-size: 0.78rem;
+        color: #666;
+        margin-top: 0.25rem;
+      }
+      .detail {
+        margin-top: 1.25rem;
+        padding: 1rem;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      .bubble {
+        margin: 0.65rem 0;
+        padding: 0.65rem 0.85rem;
+        border-radius: 10px;
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+      }
+      .bubble.user {
+        background: #111;
+        color: #fff;
+        margin-left: 2rem;
+      }
+      .bubble.assistant {
+        background: #eef0f2;
+        margin-right: 2rem;
+      }
+      .bubble .role {
+        font-size: 0.72rem;
+        opacity: 0.75;
+        margin-bottom: 0.35rem;
+      }
+      .tools {
+        font-size: 0.75rem;
+        color: #555;
+        margin-top: 0.35rem;
+      }
+      .err {
+        color: #b00020;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Conversation log</h1>
+    <p style="font-size: 0.88rem; color: #555">
+      Use the same value as <code>ADMIN_API_SECRET</code> from
+      <code>.dev.vars</code> (local) or <code>wrangler secret</code> (deployed).
+      It is only kept in this browser.
+    </p>
+
+    <div class="row">
+      <label for="secret">Admin API Secret Key</label>
+      <input
+        id="secret"
+        type="password"
+        autocomplete="off"
+        placeholder="ADMIN_API_SECRET"
+      />
+      <div>
+        <button type="button" id="save">Save and Load List</button>
+        <button type="button" class="secondary" id="clear">Clear Key</button>
+      </div>
+    </div>
+
+    <p id="err" class="err" hidden></p>
+
+    <h2 style="font-size: 1rem; margin-top: 1.5rem">Session List</h2>
+    <ul class="sessions" id="list"></ul>
+
+    <div class="detail" id="detail" hidden>
+      <h2 style="font-size: 1rem; margin-top: 0">Conversation Content</h2>
+      <p class="meta" id="detailMeta"></p>
+      <div id="detailBody"></div>
+    </div>
+
+    <script>
+      const STORAGE_KEY = "trip-planner-admin-secret";
+      const $ = (id) => document.getElementById(id);
+      const secretEl = $("secret");
+      const errEl = $("err");
+      const listEl = $("list");
+      const detailEl = $("detail");
+      const detailMetaEl = $("detailMeta");
+      const detailBodyEl = $("detailBody");
+
+      secretEl.value = localStorage.getItem(STORAGE_KEY) || "";
+
+      function showErr(msg) {
+        errEl.hidden = !msg;
+        errEl.textContent = msg || "";
+      }
+
+      function authHeaders() {
+        const key = secretEl.value.trim();
+        return key ? { Authorization: "Bearer " + key } : {};
+      }
+
+      async function loadSessions() {
+        showErr("");
+        listEl.innerHTML = "";
+        detailEl.hidden = true;
+        const key = secretEl.value.trim();
+        if (!key) {
+          showErr("Enter the secret key.");
+          return;
+        }
+        const res = await fetch("/api/admin/sessions", {
+          headers: authHeaders()
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showErr(data.error || res.statusText || "Failed to load list.");
+          return;
+        }
+        const sessions = data.sessions || [];
+        if (sessions.length === 0) {
+          listEl.innerHTML =
+            "<li style='cursor:default'>No sessions yet. Send a chat message, then refresh.</li>";
+          return;
+        }
+        for (const s of sessions) {
+          const li = document.createElement("li");
+          li.innerHTML =
+            "<strong>" +
+            escapeHtml(s.sessionId) +
+            "</strong><div class='meta'>" +
+            escapeHtml(s.updatedAt) +
+            " &middot; " +
+            (s.messageCount ?? 0) +
+            " messages</div><div class='meta'>Last user: " +
+            escapeHtml(s.lastUserPreview || "—") +
+            "</div>";
+          li.addEventListener("click", () => loadDetail(s.sessionId));
+          listEl.appendChild(li);
+        }
+      }
+
+      async function loadDetail(sessionId) {
+        showErr("");
+        detailEl.hidden = false;
+        detailMetaEl.textContent = "Session: " + sessionId;
+        detailBodyEl.innerHTML = "Loading...";
+        const res = await fetch(
+          "/api/admin/sessions/" + encodeURIComponent(sessionId),
+          {
+            headers: authHeaders()
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          detailBodyEl.innerHTML =
+            "<p class='err'>" +
+            escapeHtml(data.error || "Load failed") +
+            "</p>";
+          return;
+        }
+        detailBodyEl.innerHTML = "";
+        const entries = data.entries || [];
+        for (const e of entries) {
+          const div = document.createElement("div");
+          div.className =
+            "bubble " + (e.role === "user" ? "user" : "assistant");
+          const role = document.createElement("div");
+          role.className = "role";
+          role.textContent = e.role;
+          div.appendChild(role);
+          if (e.text) {
+            const t = document.createElement("div");
+            t.textContent = e.text;
+            div.appendChild(t);
+          }
+          if (e.tools && e.tools.length) {
+            const tools = document.createElement("div");
+            tools.className = "tools";
+            tools.textContent = e.tools
+              .map((x) => x.name + (x.state ? " [" + x.state + "]" : ""))
+              .join(" · ");
+            div.appendChild(tools);
+          }
+          detailBodyEl.appendChild(div);
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      $("save").addEventListener("click", () => {
+        localStorage.setItem(STORAGE_KEY, secretEl.value.trim());
+        loadSessions();
+      });
+      $("clear").addEventListener("click", () => {
+        localStorage.removeItem(STORAGE_KEY);
+        secretEl.value = "";
+        listEl.innerHTML = "";
+        detailEl.hidden = true;
+      });
+    </script>
+  </body>
+</html>
