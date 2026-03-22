@@ -33,20 +33,14 @@ Stack in short: **Cloudflare Worker + Durable Object**, **Workers AI**, **Vite +
 
 ```mermaid
 flowchart LR
-  UI[React Chat UI]
-  W[Cloudflare Worker API]
-  DO[ChatAgent Durable Object]
-  AI[Workers AI LLM]
-  KV[(KV Storage optional)]
-
-  UI -->|HTTP/WebSocket| W
-  W --> DO
-  DO -->|prompt + context| AI
+  UI[React Chat UI] -->|HTTP| W[Worker]
+  W --> DO[ChatAgent DO]
+  DO -->|prompt| AI[Workers AI]
   AI -->|response| DO
   DO --> W
   W --> UI
 
-  DO -.->|logs or long term memory| KV
+  DO -.->|log| KV[(KV Storage)]
 ```
 
 In plain words: your message hits the Worker, the **Durable Object** holds the conversation and tools, the **model** decides which tools to run, and the **stream** brings text and tool results back to the React UI. If admin logging is enabled, completed turns can be summarized into KV for the `/admin` API.
