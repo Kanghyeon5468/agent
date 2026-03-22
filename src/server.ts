@@ -853,9 +853,10 @@ export class ChatAgent extends AIChatAgent<Env> {
     const systemPrompt = `You are Trip Planner: an adaptive travel assistant with memory. Always respond in English (itineraries, explanations, and tips), even if the user writes in another language.
 
 TOOLS (the platform runs these for you — do NOT paste JSON like {"type":"function"...} in your message):
-1) Plan: searchDestination → getWeatherForecast → write a clear day-by-day plan in your reply (this is mandatory) → createItinerary (same text as itinerary). Call estimateBudget only if the user asked for costs/budget or you are adding a short optional cost note after the written plan — never let estimateBudget be the only substantive output.
-2) Adapt: getActiveItinerary → rewrite plan in reply → modifyItinerary (full updated text + reason).
-3) Memory: rememberPreference when you learn likes, style, diet, etc. For type "style", save only a short real label (e.g. cultural, foodie, relaxation) — never placeholders or instructions like "not specified" or "please provide".
+1) Plan a trip: searchDestination → getWeatherForecast → write the FULL day-by-day itinerary in your assistant message (mandatory, with Day 1, Day 2, …) → createItinerary with that same text. If the user states a budget (e.g. £2000), treat it as a constraint: mention it in the plan, call rememberPreference with type "budget" if useful — do NOT call estimateBudget instead of writing the itinerary.
+2) estimateBudget is LAST resort for planning requests: never call it before createItinerary. Only call it after the itinerary exists in chat AND createItinerary has run, as an optional USD rough supplement — or when the user asks ONLY for costs with no itinerary request.
+3) Adapt: getActiveItinerary → rewrite plan in reply → modifyItinerary (full updated text + reason).
+4) Memory: rememberPreference when you learn likes, style, diet, budget amounts, etc. For type "style", save only a short real label (e.g. cultural, foodie, relaxation) — never placeholders or instructions like "not specified" or "please provide".
 
 Itinerary text: use headings (Day 1, Day 2, ...), times, places, tips. Tag activities [indoor] or [outdoor] when relevant.
 
@@ -870,11 +871,13 @@ ${getSchedulePrompt({ date: new Date() })}
 RULES:
 - Never output tool-call JSON as plain text; only use real tool calls.
 - Call createItinerary at most once per user request (after research tools). Do not repeat it in later steps.
-- ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat. Ending the turn with only tool cards (especially only estimateBudget) is incorrect.
+- ALWAYS write the full day-by-day itinerary as normal assistant text (headings, times, places) in your reply — not only tool calls. Users must see the plan in the chat. Ending the turn with only tool cards (especially only estimateBudget) is a failure — if you called tools, you must still output the itinerary text in the same turn.
+- Phrases like "plan a trip", "itinerary", "three weeks in Japan" require a written itinerary first; estimateBudget cannot substitute for that.
 - Put the same full itinerary in the chat as you pass to createItinerary (no extra short-only summary in chat). After any intro sentence, use a blank line before "Day 1:" or "### Day 1".
 - If the user gives city + duration, that is enough to plan (infer reasonable dates or ask one short question in English).
 - Be specific: real venues, realistic timing.
 - Keep every user-facing string in English.
+- estimateBudget returns rough USD tiers; if the user gave GBP or another currency, explain in text that the tool is USD-based and compare qualitatively — do not pretend the tool output matches their exact budget.
 - Use real line breaks between days and sections in your message — never the two-character sequence backslash + n as text.`;
 
     const prunedModelMessages = pruneMessages({
@@ -918,60 +921,6 @@ RULES:
         }),
         execute: async ({ destination, month }) =>
           getWeather(destination, month)
-      }),
-
-      estimateBudget: tool({
-        description:
-          "Optional trip cost breakdown. Call only if the user explicitly asked for budget/costs, or after you already wrote the full day-by-day itinerary in your assistant message (brief supplement). Do not use for generic trip requests where the user wants an itinerary.",
-        inputSchema: z.object({
-          destination: z.string().describe("City name"),
-          days: z.coerce.number().describe("Trip duration in days"),
-          budgetLevel: z
-            .enum(["budget", "moderate", "luxury"])
-            .describe("Spending tier"),
-          travelers: z.coerce
-            .number()
-            .default(1)
-            .describe("Number of travelers")
-        }),
-        execute: async ({ destination, days, budgetLevel, travelers }) => {
-          const key = destination.toLowerCase().trim();
-          const info = DESTINATIONS[key];
-          const daily =
-            info?.avgDailyCost[budgetLevel] ??
-            (budgetLevel === "budget"
-              ? 70
-              : budgetLevel === "moderate"
-                ? 150
-                : 400);
-
-          const accommodation = Math.round(daily * 0.4 * days);
-          const food = Math.round(daily * 0.25 * days);
-          const transport = Math.round(daily * 0.15 * days);
-          const activities = Math.round(daily * 0.15 * days);
-          const misc = Math.round(daily * 0.05 * days);
-          const perPerson =
-            accommodation + food + transport + activities + misc;
-
-          return {
-            destination,
-            days,
-            budgetLevel,
-            travelers,
-            dailyEstimate: daily,
-            breakdown: {
-              accommodation,
-              food,
-              localTransport: transport,
-              activities,
-              miscellaneous: misc,
-              totalPerPerson: perPerson
-            },
-            grandTotal: perPerson * travelers,
-            currency: "USD",
-            note: "Excludes international flights and travel insurance"
-          };
-        }
       }),
 
       createItinerary: tool({
@@ -1089,6 +1038,60 @@ RULES:
             success: true,
             reason,
             totalModifications: modified.modifications.length
+          };
+        }
+      }),
+
+      estimateBudget: tool({
+        description:
+          "Rough USD cost breakdown from curated daily tiers (not a quote). Do NOT call before createItinerary when the user asked you to plan or build an itinerary — that is wrong. Call only after the full day-by-day plan is already in your message and createItinerary has succeeded (optional supplement), or when the user explicitly wants cost numbers only. A stated budget (e.g. £2000) is a constraint for the written plan and rememberPreference — not a reason to skip the itinerary.",
+        inputSchema: z.object({
+          destination: z.string().describe("City name"),
+          days: z.coerce.number().describe("Trip duration in days"),
+          budgetLevel: z
+            .enum(["budget", "moderate", "luxury"])
+            .describe("Spending tier"),
+          travelers: z.coerce
+            .number()
+            .default(1)
+            .describe("Number of travelers")
+        }),
+        execute: async ({ destination, days, budgetLevel, travelers }) => {
+          const key = destination.toLowerCase().trim();
+          const info = DESTINATIONS[key];
+          const daily =
+            info?.avgDailyCost[budgetLevel] ??
+            (budgetLevel === "budget"
+              ? 70
+              : budgetLevel === "moderate"
+                ? 150
+                : 400);
+
+          const accommodation = Math.round(daily * 0.4 * days);
+          const food = Math.round(daily * 0.25 * days);
+          const transport = Math.round(daily * 0.15 * days);
+          const activities = Math.round(daily * 0.15 * days);
+          const misc = Math.round(daily * 0.05 * days);
+          const perPerson =
+            accommodation + food + transport + activities + misc;
+
+          return {
+            destination,
+            days,
+            budgetLevel,
+            travelers,
+            dailyEstimate: daily,
+            breakdown: {
+              accommodation,
+              food,
+              localTransport: transport,
+              activities,
+              miscellaneous: misc,
+              totalPerPerson: perPerson
+            },
+            grandTotal: perPerson * travelers,
+            currency: "USD",
+            note: "Rough USD guide only; excludes flights and insurance. Compare in prose if the user gave another currency."
           };
         }
       }),
@@ -1320,13 +1323,13 @@ RULES:
         try {
           const result = await generateText({
             model: workersai(WORKERS_AI_CHAT_MODEL),
-            maxOutputTokens: 1024,
+            maxOutputTokens: 8192,
             temperature: 0.6,
             toolChoice: "auto",
             system: systemPrompt,
             messages: prunedModelMessages,
             tools: tripTools,
-            stopWhen: stepCountIs(6),
+            stopWhen: stepCountIs(10),
             abortSignal: options?.abortSignal
           });
 

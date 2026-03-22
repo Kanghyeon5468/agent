@@ -184,8 +184,21 @@ function describeToolOutput(name: string, output: any): string | null {
         if (output.avgTemperatureCelsius !== undefined)
           return `${output.destination} in ${output.month}: ${output.avgTemperatureCelsius}°C (${output.avgTemperatureFahrenheit}°F), ${output.conditions}, Rain: ${output.rainfallLevel}\nPacking: ${output.packingRecommendation}`;
         return output.note ?? "Weather data unavailable";
-      case "estimateBudget":
-        return `${output.destination} ${output.days}d ${output.budgetLevel}: $${output.dailyEstimate}/day → Total $${output.grandTotal} (${output.travelers} traveler${output.travelers > 1 ? "s" : ""})\n  Accommodation $${output.breakdown?.accommodation} · Food $${output.breakdown?.food} · Transport $${output.breakdown?.localTransport} · Activities $${output.breakdown?.activities}`;
+      case "estimateBudget": {
+        const b = output.breakdown as
+          | {
+              accommodation?: number;
+              food?: number;
+              localTransport?: number;
+              activities?: number;
+              miscellaneous?: number;
+              totalPerPerson?: number;
+            }
+          | undefined;
+        const misc = b?.miscellaneous ?? 0;
+        const per = b?.totalPerPerson ?? output.grandTotal;
+        return `${output.destination} ${output.days}d ${output.budgetLevel}: ~$${output.dailyEstimate}/day (USD) → Total ~$${output.grandTotal} (${output.travelers} traveler${output.travelers > 1 ? "s" : ""})\n  Accommodation $${b?.accommodation} · Food $${b?.food} · Transport $${b?.localTransport} · Activities $${b?.activities} · Misc $${misc} → per person $${per}`;
+      }
       case "createItinerary":
         return `Itinerary saved — ${output.dayCount ?? "?"} days`;
       case "modifyItinerary":
